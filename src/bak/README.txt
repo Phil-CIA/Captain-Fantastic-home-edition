@@ -1,0 +1,1 @@
+This folder contains backup files (.bak) and old versions. Only keep current code in src/.

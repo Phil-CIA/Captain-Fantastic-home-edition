@@ -1,0 +1,1 @@
+This folder contains diagnostic and tool code. Only keep main application code in src/.

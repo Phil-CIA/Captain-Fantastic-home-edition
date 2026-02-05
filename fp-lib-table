@@ -1,0 +1,11 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Captain fantastic footprints")(type "KiCad")(uri "${KIPRJMOD}/Captain fantastic footprints.pretty")(options "")(descr ""))
+  (lib (name "s")(type "KiCad")(uri "${KIPRJMOD}/Captain fantastic footprints.pretty")(options "")(descr ""))
+  (lib (name "KiCad")(type "KiCad")(uri "C:/Users/user/Downloads/LIB_K104K15X7RF5WH5/K104K15X7RF5WH5/KiCad")(options "")(descr ""))
+  (lib (name "footprints")(type "KiCad")(uri "C:/Users/user/Downloads/LDS_C814RI (1)/KiCADv6/footprints.pretty")(options "")(descr ""))
+  (lib (name "IRLZ44NPBF")(type "KiCad")(uri "C:/Users/user/Downloads/IRLZ44NPBF")(options "")(descr ""))
+  (lib (name "Library")(type "KiCad")(uri "${KIPRJMOD}/Captain fantastic footprints.pretty/Library.pretty")(options "")(descr ""))
+  (lib (name "PTV09A_2015U_B103 (1)")(type "KiCad")(uri "C:/Users/user/Downloads/PTV09A_2015U_B103 (1)")(options "")(descr ""))
+  (lib (name "_conn molex")(type "KiCad")(uri "C:/Users/user/Downloads/exports (2)/KiCADv6/footprints.pretty")(options "")(descr ""))
+)

@@ -1,0 +1,1 @@
+This folder contains display-related code. Only keep main application code in src/.

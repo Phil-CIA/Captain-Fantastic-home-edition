@@ -1,0 +1,37 @@
+========================================
+  START MUSIC SERVER - QUICK GUIDE
+========================================
+
+STEP 1: Open Admin PowerShell
+------------------------------
+1. Press the WINDOWS KEY on your keyboard (or click Start button)
+2. Type: powershell
+3. RIGHT-CLICK on "Windows PowerShell" in the search results
+4. Click "Run as administrator"
+5. Click "YES" when Windows asks for permission
+
+STEP 2: Start the Server
+-------------------------
+A blue PowerShell window will open.
+Copy these two lines and paste them into that window:
+
+cd "C:\Users\user\Esp32 projects VScode\Captain-Fantastic-home-edition"
+.\Start-MusicServer.ps1
+
+Press ENTER after pasting.
+
+STEP 3: Allow Firewall Access
+------------------------------
+If Windows Firewall pops up asking about PowerShell:
+- Click "Allow access" or check both boxes and click "Allow"
+
+STEP 4: Verify Server Running
+------------------------------
+You should see:
+✓ Server started successfully!
+✓ List of 6 MP3 files
+✓ URL: http://192.168.0.60:8000/
+
+Your ESP32 will automatically connect and start streaming music!
+
+========================================

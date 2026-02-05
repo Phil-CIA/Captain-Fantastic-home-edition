@@ -1,0 +1,1 @@
+This folder contains hardware design files, schematics, and PCB layouts.

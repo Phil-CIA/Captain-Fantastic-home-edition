@@ -1,0 +1,1909 @@
+// This file has been renamed to combined_test_rtos.cpp.bak to disable it from build.
+
+// ========== ONBOARD LED BLINK TASK FOR VERIFICATION ========== 
+
+// ========== SHIFT REGISTER UPDATE SYSTEM ========== 
+#include "freertos/semphr.h"
+
+// Forward declaration for timer-driven matrix scan handler
+void handleMatrixScanFromISR();
+#define SR_DATA   2   // GPIO2 - Serial data (SER/DS pin on first 595)
+#define SR_CLOCK  12  // GPIO12 - Shift clock (SRCLK/SH_CP on both 595s)
+#define SR_LATCH  4   // GPIO4 - Storage register clock (RCLK/ST_CP on both 595s)
+
+volatile uint16_t shiftRegisterState = 0;
+volatile uint16_t shiftRegisterDesiredState = 0;
+QueueHandle_t shiftRegRequestQueue;
+
+void shiftOut16(uint16_t value) {
+    digitalWrite(SR_LATCH, LOW);
+    for (int i = 15; i >= 0; i--) {
+        digitalWrite(SR_CLOCK, LOW);
+        digitalWrite(SR_DATA, (value >> i) & 0x01);
+        digitalWrite(SR_CLOCK, HIGH);
+    }
+    digitalWrite(SR_LATCH, HIGH);
+    delayMicroseconds(5); // Allow latch to settle
+}
+
+void shiftRegisterUpdateTask(void *pvParameters) {
+    pinMode(SR_DATA, OUTPUT);
+    pinMode(SR_CLOCK, OUTPUT);
+    pinMode(SR_LATCH, OUTPUT);
+    uint16_t lastWritten = 0xFFFF;
+    while (1) {
+        if (shiftRegisterDesiredState != lastWritten) {
+            shiftRegisterState = shiftRegisterDesiredState;
+            shiftOut16(shiftRegisterState);
+            lastWritten = shiftRegisterState;
+            delayMicroseconds(200); // Allow hardware to settle
+        }
+        vTaskDelay(pdMS_TO_TICKS(1)); // Polling interval
+    }
+}
+
+// Request structure for shift register updates
+struct ShiftRegRequest {
+    uint16_t value;
+    bool orMask; // true: OR with current, false: set absolute
+};
+
+void requestShiftRegisterUpdate(uint16_t value, bool orMask = false) {
+    ShiftRegRequest req = {value, orMask};
+    xQueueSend(shiftRegRequestQueue, &req, pdMS_TO_TICKS(100));
+}
+
+// ========== SHIFT REGISTER WALKING 1 TEST TASK (USING SEMAPHORE SYSTEM) ========== 
+// Forward declaration for test task
+void updateShiftRegister();
+void shiftRegisterTestTask(void *pvParameters) {
+    const int ONBOARD_LED_PIN = 2; // GPIO2 is onboard LED for ESP32 DevKit
+    pinMode(ONBOARD_LED_PIN, OUTPUT); // Onboard LED
+    while (1) {
+        for (int i = 0; i < 16; i++) {
+            shiftRegisterState = (1 << i);
+            updateShiftRegister();
+            digitalWrite(ONBOARD_LED_PIN, (i % 2) ? HIGH : LOW); // Toggle onboard LED for visual feedback
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
+    }
+}
+
+// ========== HARDWARE CONFIGURATION ==========
+
+// LED 7-Segment Display (HT16K33 breakout - bare chip with 8 COM outputs)
+// Testing all 8 positions (COM0-COM7) to find which 6 are wired to displays
+#define HT16K33_ADDRESS 0x70  // Single HT16K33 breakout
+
+// I2C Configuration - Bus 0 (HT16K33 Display)
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define I2C_FREQ 100000
+
+// ========== SHIFT REGISTER CONFIGURATION (Two 74HC595s) ==========
+// Two 74HC595 shift registers daisy-chained: 16 bits total
+// Controls solenoids, lamp columns, and status LEDs
+#define SR_DATA   2   // GPIO2 - Serial data (SER/DS pin on first 595)
+#define SR_CLOCK  12  // GPIO12 - Shift clock (SRCLK/SH_CP on both 595s)
+#define SR_LATCH  4   // GPIO4 - Storage register clock (RCLK/ST_CP on both 595s)
+
+// Shift register bit mapping (16 bits total):
+// U9 (First 595) - Bits 0-7:  Lamp columns + unused
+// U1 (Second 595) - Bits 8-15: Solenoids + status LEDs
+
+// U9 outputs (bits 0-7):
+#define SR_BIT_L3   0  // Bit 0: Lamp column L3 (TILT lamp - not scanned)
+#define SR_BIT_L4   1  // Bit 1: Lamp column L4 (matrix scan)
+#define SR_BIT_L5   2  // Bit 2: Lamp column L5 (matrix scan)
+#define SR_BIT_L6   3  // Bit 3: Lamp column L6 (matrix scan)
+#define SR_BIT_L7   4  // Bit 4: Lamp column L7 (matrix scan)
+#define SR_BIT_SOL0 5  // Bit 5: Solenoid 0
+#define SR_BIT_SOL1 6  // Bit 6: Solenoid 1
+#define SR_BIT_SOL2 7  // Bit 7: Solenoid 2
+
+// U1 outputs (bits 8-15):
+#define SR_BIT_SOL3 8   // Bit 8: Solenoid 3
+#define SR_BIT_SOL4 9   // Bit 9: Solenoid 4
+#define SR_BIT_SOL5 10  // Bit 10: Solenoid 5
+#define SR_BIT_LED9 11  // Bit 11: Status LED9 (direct)
+#define SR_BIT_LED10 12 // Bit 12: Status LED10 (direct)
+// Bits 13-15: Unused
+
+// ========== LAMP MATRIX CONFIGURATION ==========
+// Lamp Matrix: 8 rows × 5 columns = 40 lamps (32 scanned + TILT)
+// Row drivers: ESP32 GPIO → 2N7000/BSS138 → IRF4905 P-channel MOSFETs
+// Column drivers: 74HC595 shift register → N-channel MOSFETs
+
+// Row pins (M1-M8) - P-channel via N-ch level shifter (inverted: HIGH = ON)
+#define ROW_M1  23  // GPIO23 (per spreadsheet)
+#define ROW_M2  19  // GPIO19  
+#define ROW_M3  18  // GPIO18
+#define ROW_M4   5  // GPIO5
+#define ROW_M5  17  // GPIO17
+#define ROW_M6  16  // GPIO16
+#define ROW_M7  15  // GPIO15
+#define ROW_M8  13  // GPIO13
+
+// Lamp columns now driven by shift register (see SR_BIT_L3-L7 above)
+// GPIO 27, 26, 33, 32 freed up for SPI flash
+
+#define NUM_LAMP_ROWS 8
+#define NUM_LAMP_COLS 5  // L3(TILT) + L4 + L5 + L6 + L7
+#define LAMP_REFRESH_RATE 200  // Hz (5ms per complete scan)
+
+// ========== SWITCH MATRIX CONFIGURATION ==========
+// Switch Matrix: 8 rows × 4 columns = 32 switch positions (22 used)
+// Shares same 8 rows with lamp matrix
+// Switch columns: Input-only GPIOs with internal pull-ups
+
+// Switch column pins (SW1-SW4) - Input with pull-ups
+#define COL_SW1  35  // GPIO35 (input-only)
+#define COL_SW2  34  // GPIO34 (input-only)
+#define COL_SW3  39  // GPIO39 (input-only)
+#define COL_SW4  36  // GPIO36 (input-only)
+
+#define NUM_SWITCH_ROWS 8
+#define NUM_SWITCH_COLS 4
+#define SWITCH_DEBOUNCE_MS 20  // Debounce time in milliseconds
+
+// ========== TEST/DIAGNOSTIC SWITCH ==========
+// Physical test switch on board (normally open, pulled high)
+#define TEST_SWITCH_PIN  14  // GPIO14 - Test switch input
+// When grounded (switch closed), enters diagnostic mode
+
+// ========== WIFI CONFIGURATION ==========
+// WiFi credentials for network streaming
+const char* WIFI_SSID = "forche";
+const char* WIFI_PASSWORD = "gizmoa22";
+const char* MUSIC_SERVER_IP = "192.168.0.60";  // Your PC's IP address
+const int MUSIC_SERVER_PORT = 8000;
+
+// ========== SOUND CONFIGURATION ==========
+// Modern sound system: ESP32 DAC → LM384N amplifier
+#define AUDIO_PIN  25  // GPIO25 - DAC1 output to LM384N
+
+// I2S Audio Output (for MP3 playback)
+#define I2S_DOUT  25   // GPIO25 - DAC1 (same as AUDIO_PIN)
+#define I2S_BCLK  26   // GPIO26 - Bit clock (not used in DAC mode)
+#define I2S_LRC   22   // GPIO22 - Left/Right clock (not used in DAC mode)
+
+// Captain Fantastic sound frequencies (tuned to original)
+#define FREQ_LOW    700   // Bumper, slingshot
+#define FREQ_HIGH   1300  // Target, rollover
+#define FREQ_MID    1000  // Bonus count
+#define FREQ_SPECIAL_START 700
+#define FREQ_SPECIAL_END   1500
+#define FREQ_DRAIN_START   1200
+#define FREQ_DRAIN_END     600
+
+// Sound effect IDs
+enum SoundEffect {
+    SND_NONE = 0,
+    SND_BUMPER,
+    SND_SLINGSHOT,
+    SND_TARGET,
+    SND_ROLLOVER,
+    SND_DRAIN,
+    SND_BONUS_COUNT,
+    SND_SPECIAL,
+    SND_STARTUP
+};
+
+
+// ========== GLOBAL OBJECTS ==========
+
+// WiFi State
+bool wifiConnected = false;
+String wifiLocalIP = "";
+
+
+// HT16K33 LED 7-Segment Display (single backpack driving 6 digits)
+Adafruit_7segment ledDisplay;
+
+// ========== SHIFT REGISTER STATE ==========
+
+// ========== W25Q64 FLASH OBJECT ========== 
+W25Q64 flash;
+bool w25q64Tested = false;
+
+// ========== SOLENOID STATE ==========
+volatile uint8_t currentSolenoidNumber = 0xFF;  // Current selected solenoid (0-7, 0xFF = none)
+
+
+// ========== LAMP MATRIX STATE ========== 
+// Lamp state array: [row][col] - true = lamp ON
+bool lampMatrix[NUM_LAMP_ROWS][NUM_LAMP_COLS] = {0};
+
+// ========== MISSING GLOBALS RESTORED ========== 
+SemaphoreHandle_t i2cSemaphore = nullptr;
+bool testModeActive = false;
+bool matrixEnabled = true;
+// Switch matrix state arrays
+bool switchRaw[NUM_SWITCH_ROWS][NUM_SWITCH_COLS] = {0};
+bool switchDebounced[NUM_SWITCH_ROWS][NUM_SWITCH_COLS] = {0};
+bool switchPrevDebounced[NUM_SWITCH_ROWS][NUM_SWITCH_COLS] = {0};
+uint32_t switchDebounceTime[NUM_SWITCH_ROWS][NUM_SWITCH_COLS] = {0};
+// Switch column pin array
+const uint8_t switchColPins[NUM_SWITCH_COLS] = {COL_SW1, COL_SW2, COL_SW3, COL_SW4};
+
+// Row pin array
+const uint8_t rowPins[NUM_LAMP_ROWS] = {ROW_M1, ROW_M2, ROW_M3, ROW_M4, ROW_M5, ROW_M6, ROW_M7, ROW_M8};
+// Lamp columns now driven by shift register (bits 0-4)
+
+// === MINIMAL SINGLE-LAMP TEST ROUTINE ===
+void minimalLampTest() {
+    Serial.println("\n=== Minimal Single-Lamp Test ===");
+    // Set all rows LOW
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        digitalWrite(rowPins[r], LOW);
+    }
+    // Set Row 0 HIGH
+    digitalWrite(rowPins[0], HIGH);
+
+    // Set all lampMatrix entries OFF
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = false;
+        }
+    }
+    // (Rest of minimalLampTest logic goes here if needed)
+}
+QueueHandle_t displayQueue;
+QueueHandle_t solenoidQueue;
+QueueHandle_t soundQueue;
+
+TaskHandle_t displayTaskHandle;
+TaskHandle_t solenoidTaskHandle;
+TaskHandle_t matrixTaskHandle;      // Combined switch/lamp matrix
+TaskHandle_t debounceTaskHandle;    // Switch debounce processing
+TaskHandle_t soundTaskHandle;
+
+// Task control flags
+volatile bool displayEnabled = false;  // DISABLED FOR AUDIO TEST
+volatile bool solenoidEnabled = false;  // DISABLED FOR AUDIO TEST
+volatile bool soundEnabled = false;  // DISABLED FOR AUDIO TEST (using MP3 only)
+volatile uint32_t currentScore = 0;  // 6-digit score (0-999999)
+
+// ========== EM-STYLE GAME STATE ==========
+// Persistent game state (like EM relays/steppers)
+struct GameState {
+    uint8_t currentBall;        // 1-5
+    uint8_t currentPlayer;      // 1-4
+    uint8_t numPlayers;         // 1-4
+    uint32_t playerScores[4];   // Individual scores
+    uint8_t bonusValue;         // 0-10 (bonus ladder 1K-10K)
+    uint8_t multiplier;         // 1, 2, 3, 5 (score multiplier)
+    bool extraBallLit;          // Special relay state
+    bool ballInPlay;            // Game active
+    bool gameOver;              // Waiting for coin/start
+    bool tiltActive;            // Tilt relay
+    uint32_t ballStartTime;     // For timeout detection
+} gameState;
+
+// Initialize game state
+void initGameState() {
+    gameState.currentBall = 1;
+    gameState.currentPlayer = 1;
+    gameState.numPlayers = 1;
+    for (int i = 0; i < 4; i++) {
+        gameState.playerScores[i] = 0;
+    }
+    gameState.bonusValue = 0;
+    gameState.multiplier = 1;
+    gameState.extraBallLit = false;
+    gameState.ballInPlay = false;
+    gameState.gameOver = true;
+    gameState.tiltActive = false;
+    gameState.ballStartTime = 0;
+    currentScore = 0;
+}
+
+// ========== MESSAGE STRUCTURES ==========
+struct DisplayMessage {
+    uint8_t displayNum;  // 0-4 (which display)
+    uint8_t digit;       // 0-9 to display
+};
+
+struct SolenoidMessage {
+    uint8_t number;  // Solenoid number 0-7
+    bool state;      // true=ON, false=OFF
+};
+
+struct SoundMessage {
+    SoundEffect effect;  // Which sound to play
+    uint8_t priority;    // 0=normal, 255=interrupt current sound
+};
+
+// ========== FORWARD DECLARATIONS ==========
+void updateShiftRegister();
+void setBit(uint8_t bitNum, bool state);
+void updateLEDScore(uint32_t score);
+void setLamp(uint8_t row, uint8_t col, bool state);
+void clearAllLamps();
+void setFireSolenoid(uint8_t number, bool state);
+void allSolenoidsOff();
+void playCaptainFantasticSound(SoundEffect effect);
+
+// Game logic forward declarations
+void startGame(uint8_t players);
+void startBall();
+void endBall();
+void endGame();
+void bonusCountdown();
+void addScore(uint32_t points);
+void advanceBonus();
+void setMultiplier(uint8_t mult);
+
+// MP3 music system forward declarations
+void initWiFi();
+void initMP3Player();
+void playMusicHTTP(const char* filename);
+void stopMusic();
+void updateMusicPlayer();
+
+// ========== SOUND FUNCTIONS ==========
+
+void playTone(uint16_t frequency, uint16_t duration_ms) {
+    if (!soundEnabled || frequency == 0) {
+        return;
+    }
+    
+    uint32_t period_us = 1000000 / frequency;
+    uint32_t half_period = period_us / 2;
+    uint32_t cycles = (uint32_t)frequency * duration_ms / 1000;
+    
+    // Generate square wave on DAC
+    for (uint32_t i = 0; i < cycles; i++) {
+        dacWrite(AUDIO_PIN, 200);  // High level
+        delayMicroseconds(half_period);
+        dacWrite(AUDIO_PIN, 55);   // Low level
+        delayMicroseconds(half_period);
+    }
+    dacWrite(AUDIO_PIN, 128);  // Return to center (silence)
+}
+
+void playCaptainFantasticSound(SoundEffect effect) {
+    switch (effect) {
+        case SND_BUMPER:
+            playTone(FREQ_LOW, 100);  // Low buzz, 100ms
+            break;
+            
+        case SND_SLINGSHOT:
+            playTone(FREQ_LOW, 80);   // Shorter low buzz
+            delay(10);
+            playTone(FREQ_LOW * 1.2, 60);  // Rising tone
+            break;
+            
+        case SND_TARGET:
+            playTone(FREQ_HIGH, 80);  // High beep
+            break;
+            
+        case SND_ROLLOVER:
+            playTone(FREQ_HIGH, 60);  // Shorter high beep
+            break;
+            
+        case SND_BONUS_COUNT:
+            playTone(FREQ_MID, 50);   // Quick mid-range beep
+            break;
+            
+        case SND_SPECIAL:
+            // Rising pitch fanfare (authentic Captain Fantastic style)
+            for (int f = FREQ_SPECIAL_START; f <= FREQ_SPECIAL_END; f += 50) {
+                playTone(f, 40);
+            }
+            break;
+            
+        case SND_DRAIN:
+            // Descending tone (sad sound)
+            for (int f = FREQ_DRAIN_START; f >= FREQ_DRAIN_END; f -= 50) {
+                playTone(f, 30);
+            }
+            break;
+            
+        case SND_STARTUP:
+            // Power-on jingle
+            playTone(523, 150);   // C
+            playTone(659, 150);   // E
+            playTone(784, 300);   // G
+            break;
+            
+        default:
+            break;
+    }
+}
+
+void triggerSound(SoundEffect effect, uint8_t priority = 0) {
+    if (soundQueue != NULL) {
+        SoundMessage msg = {effect, priority};
+        xQueueSend(soundQueue, &msg, 0);  // Non-blocking
+    }
+}
+
+// ========== WIFI SYSTEM ==========
+
+void initWiFi() {
+    Serial.println("\n[WiFi] Connecting to network...");
+    Serial.printf("[WiFi] SSID: %s\n", WIFI_SSID);
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    
+    // Wait up to 10 seconds for connection
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        wifiConnected = true;
+        wifiLocalIP = WiFi.localIP().toString();
+        Serial.println("");
+        Serial.println("[WiFi] Connected!");
+        Serial.printf("[WiFi] IP Address: %s\n", wifiLocalIP.c_str());
+        Serial.printf("[WiFi] Signal: %d dBm\n", WiFi.RSSI());
+        Serial.printf("[WiFi] Music server: http://%s:%d/\n", MUSIC_SERVER_IP, MUSIC_SERVER_PORT);
+    } else {
+        wifiConnected = false;
+        Serial.println("");
+        Serial.println("[WiFi] Connection failed!");
+        Serial.println("[WiFi] Will use SPIFFS for all music (limited library)");
+    }
+}
+
+
+// ========== SWITCH EVENT HANDLER ==========
+
+void handleSwitchPress(uint8_t row, uint8_t col) {
+    // Calculate switch number (0-31, though only 22 are used)
+    uint8_t switchNum = row * NUM_SWITCH_COLS + col;
+    
+    Serial.printf("Switch[%d]: Row M%d, Col SW%d", switchNum, row+1, col+1);
+    
+    // Special switches (non-scoring)
+    if (switchNum == 23) {  // Outhole (ball drain)
+        Serial.println(" - DRAIN");
+        endBall();
+        return;
+    }
+    
+    if (switchNum == 24) {  // Tilt switch
+        Serial.println(" - TILT!");
+        gameState.tiltActive = true;
+        clearAllLamps();
+        playCaptainFantasticSound(SND_DRAIN);
+        return;
+    }
+    
+    if (switchNum == 25) {  // Start button
+        Serial.println(" - START");
+        if (gameState.gameOver) {
+            startGame(1);  // TODO: Detect multi-player from credits
+        }
+        return;
+    }
+    
+    // Game scoring switches (only active during play)
+    if (!gameState.ballInPlay || gameState.tiltActive) {
+        Serial.println(" - Ignored (no ball in play)");
+        return;
+    }
+    
+    // Handle scoring switches with EM-style logic
+    switch (switchNum) {
+        // Rollovers (lanes a-d): S1-S4
+        case 0 ... 3:
+            Serial.println(" - Rollover Lane");
+            triggerSound(SND_ROLLOVER);
+            addScore(1000);
+            setLamp(row, col, true);  // Light lane lamp
+            advanceBonus();  // EM: Completing lanes advances bonus
+            break;
+            
+        // Targets: S5, S6, S9
+        case 4:  // S5 - Target 3
+        case 5:  // S6 - Target 1
+        case 8:  // S9 - Target 2
+            Serial.println(" - Target");
+            triggerSound(SND_TARGET);
+            addScore(500);
+            setLamp(row, col, true);  // Light target
+            // EM: Completing all 3 targets lights special
+            // TODO: Check if all 3 targets lit
+            break;
+            
+        // Bumpers: S7, S8
+        case 6:  // S7 - Left bumper
+        case 7:  // S8 - Right bumper
+            Serial.println(" - Bumper");
+            triggerSound(SND_BUMPER);
+            addScore(100);
+            // Fire bumper solenoid
+            {
+                SolenoidMessage solMsg = {(uint8_t)(switchNum - 6), true};
+                xQueueSend(solenoidQueue, &solMsg, 0);
+            }
+            break;
+            
+        // Spinners: S10, S11
+        case 9:   // S10 - Left spinner
+        case 10:  // S11 - Right spinner
+            Serial.println(" - Spinner");
+            triggerSound(SND_TARGET);
+            addScore(10);
+            // EM: Each revolution advances bonus slightly
+            if (random(100) < 20) advanceBonus();  // ~20% chance per spin
+            break;
+            
+        // Slingshots: S14-S17
+        case 13 ... 16:
+            Serial.println(" - Slingshot");
+            triggerSound(SND_SLINGSHOT);
+            addScore(10);
+            // Fire slingshot solenoid
+            {
+                SolenoidMessage solMsg = {(uint8_t)(switchNum - 11), true};
+                xQueueSend(solenoidQueue, &solMsg, 0);
+            }
+            break;
+            
+        // Return lanes: S18, S19
+        case 17:  // S18 - Left return lane
+        case 18:  // S19 - Right return lane
+            Serial.println(" - Return Lane");
+            triggerSound(SND_ROLLOVER);
+            addScore(500);
+            // EM: Return lanes advance multiplier (1X→2X→3X→5X)
+            if (gameState.multiplier == 1) setMultiplier(2);
+            else if (gameState.multiplier == 2) setMultiplier(3);
+            else if (gameState.multiplier == 3) setMultiplier(5);
+            break;
+            
+        // Outlanes: S21, S22
+        case 20:  // S21 - Left outlane
+        case 21:  // S22 - Right outlane
+            Serial.println(" - Outlane");
+            triggerSound(SND_DRAIN);
+            addScore(100);
+            break;
+            
+        default:
+            Serial.println(" - Generic");
+            triggerSound(SND_TARGET);
+            addScore(50);
+            break;
+    }
+}
+
+// ========== I2C PROTECTED FUNCTIONS ==========
+
+bool takeSemaphore(const char* caller, TickType_t timeout = portMAX_DELAY) {
+    if (xSemaphoreTake(i2cSemaphore, timeout) == pdTRUE) {
+        return true;
+    }
+    Serial.print("TIMEOUT: ");
+    Serial.print(caller);
+    Serial.println(" couldn't get I2C semaphore");
+    return false;
+}
+
+void giveSemaphore() {
+    xSemaphoreGive(i2cSemaphore);
+}
+
+// ========== 74HC138 SOLENOID FUNCTIONS ==========
+
+void initLampMatrix() {
+    // Configure all row pins (M1-M8) as outputs
+    // These drive Bss138 which inverts signal for P-channel MOSFETs
+    for (uint8_t i = 0; i < NUM_LAMP_ROWS; i++) {
+        pinMode(rowPins[i], OUTPUT);
+        digitalWrite(rowPins[i], LOW);  // LOW = Row OFF (ULN2803A pulls gate HIGH)
+    }
+    
+    // Lamp columns (L3-L7) now controlled via shift register
+    // Clear all column bits (bits 0-4)
+    shiftRegisterState &= ~0x001F;  // Clear bits 0-4
+    updateShiftRegister();
+    
+    // Clear lamp matrix state
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = false;
+        }
+    }
+    
+    Serial.printf("      Rows (M1-M8): GPIO");
+    for (uint8_t i = 0; i < NUM_LAMP_ROWS; i++) {
+        Serial.printf(" %d", rowPins[i]);
+    }
+    Serial.printf("\n      Cols (L3-L7): Shift Register bits %d-%d\n", SR_BIT_L3, SR_BIT_L7);
+}
+
+void initSwitchMatrix() {
+    // Row pins already configured as outputs by initLampMatrix()
+    // (shared between switches and lamps)
+    
+    // Configure all switch column pins (SW1-SW4) as inputs with pull-ups
+    for (uint8_t i = 0; i < NUM_SWITCH_COLS; i++) {
+        pinMode(switchColPins[i], INPUT_PULLUP);
+    }
+    
+    // Clear switch matrix state
+    for (uint8_t r = 0; r < NUM_SWITCH_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_SWITCH_COLS; c++) {
+            switchRaw[r][c] = false;
+            switchDebounced[r][c] = false;
+            switchPrevDebounced[r][c] = false;
+            switchDebounceTime[r][c] = 0;
+        }
+    }
+    
+    Serial.printf("      Rows: Shared with lamps (M1-M8)\n");
+    Serial.printf("      Cols (SW1-SW4): GPIO %d, %d, %d, %d (INPUT_PULLUP)\n", 
+        switchColPins[0], switchColPins[1], switchColPins[2], switchColPins[3]);
+}
+
+void setLamp(uint8_t row, uint8_t col, bool state) {
+    if (row >= NUM_LAMP_ROWS || col >= NUM_LAMP_COLS) return;
+    lampMatrix[row][col] = state;
+}
+
+void clearAllLamps() {
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = false;
+        }
+    }
+}
+
+void setLampPattern(bool pattern[NUM_LAMP_ROWS][NUM_LAMP_COLS]) {
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = pattern[r][c];
+        }
+    }
+}
+
+void testLampSequence() {
+    Serial.println("\n=== Lamp Matrix Test Sequence ===");
+    Serial.println("Hardware: 4 rows (M1-M4) × 2 columns (L4-L5)");
+    Serial.println("Testing 8 lamps total...\n");
+    
+    // Test each lamp individually
+    for (uint8_t r = 0; r < 4; r++) {  // 4 rows
+        for (uint8_t c = 0; c < 2; c++) {  // 2 columns
+            Serial.print("Lamp [Row ");
+            Serial.print(r);
+            Serial.print("][Col ");
+            Serial.print(c);
+            Serial.println("] ON");
+            
+            setLamp(r, c, true);
+            delay(300);  // Longer delay to see each lamp
+            setLamp(r, c, false);
+        }
+    }
+    
+    Serial.println("\nAll lamps ON...");
+    // Test all lamps on
+    for (uint8_t r = 0; r < 4; r++) {
+        for (uint8_t c = 0; c < 2; c++) {
+            setLamp(r, c, true);
+        }
+    }
+    delay(1000);
+    
+    Serial.println("All lamps OFF");
+    clearAllLamps();
+    
+    Serial.println("=== Test Complete ===\n");
+}
+
+// ========== FACTORY DIAGNOSTIC ROUTINES ==========
+// Bally-style test procedures activated by test switch
+
+void diagnosticSwitchTest() {
+    Serial.println("\n========================================");
+    Serial.println("  DIAGNOSTIC: SWITCH MATRIX TEST");
+    Serial.println("========================================");
+    Serial.println("Testing all 32 switch positions");
+    Serial.println("Close switches to see row/column display");
+    Serial.println("Press test switch again to exit\n");
+    
+    uint32_t lastUpdate = 0;
+    bool displayedHeader = false;
+    
+    while (digitalRead(TEST_SWITCH_PIN) == LOW) {  // Stay in test while switch closed
+        uint32_t now = millis();
+        
+        // Scan and display active switches every 100ms
+        if (now - lastUpdate >= 100) {
+            lastUpdate = now;
+            bool anyActive = false;
+            
+            // Check all switch positions
+            for (uint8_t row = 0; row < NUM_SWITCH_ROWS; row++) {
+                for (uint8_t col = 0; col < NUM_SWITCH_COLS; col++) {
+                    if (switchRaw[row][col]) {
+                        if (!displayedHeader) {
+                            Serial.println("ACTIVE SWITCHES:");
+                            displayedHeader = true;
+                        }
+                        Serial.printf("  Switch [Row %d][Col %d] CLOSED\n", row, col);
+                        anyActive = true;
+                    }
+                }
+            }
+            
+            if (anyActive) {
+                displayedHeader = false;  // Reset for next scan
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    
+    Serial.println("\n=== Switch Test Complete ===\n");
+}
+
+void diagnosticLampTest() {
+    Serial.println("\n========================================");
+    Serial.println("  DIAGNOSTIC: LAMP MATRIX TEST");
+    Serial.println("========================================");
+    
+    // Test 1: All lamps ON
+    Serial.println("Test 1: ALL LAMPS ON (2 seconds)");
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = true;
+        }
+    }
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    
+    // Test 2: Sequential test
+    Serial.println("Test 2: SEQUENTIAL TEST");
+    clearAllLamps();
+    
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            Serial.printf("  Lamp [Row %d][Col %d]\n", r, c);
+            lampMatrix[r][c] = true;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            lampMatrix[r][c] = false;
+        }
+    }
+    
+    Serial.println("\n=== Lamp Test Complete ===\n");
+}
+
+void diagnosticSolenoidTest() {
+    Serial.println("\n========================================");
+    Serial.println("  DIAGNOSTIC: SOLENOID TEST");
+    Serial.println("========================================");
+    Serial.println("WARNING: Firing solenoids individually");
+    Serial.println("20ms pulse each to prevent overheating\n");
+    
+    for (uint8_t sol = 0; sol < 8; sol++) {
+        Serial.printf("Solenoid %d: FIRE (20ms)\n", sol);
+        setFireSolenoid(sol, true);
+        vTaskDelay(pdMS_TO_TICKS(20));  // Short pulse to protect coils
+        setFireSolenoid(sol, false);
+        vTaskDelay(pdMS_TO_TICKS(500)); // Cool-down between fires
+    }
+    
+    allSolenoidsOff();
+    Serial.println("\n=== Solenoid Test Complete ===\n");
+}
+
+void diagnosticDisplayTest() {
+    Serial.println("\n========================================");
+    Serial.println("  DIAGNOSTIC: DISPLAY TEST");
+    Serial.println("========================================");
+    
+    if (takeSemaphore("displayTest", pdMS_TO_TICKS(1000))) {
+        // Test 1: All segments ON
+        Serial.println("Test 1: ALL SEGMENTS ON");
+        for (uint8_t i = 0; i < 8; i++) {
+            ledDisplay.displaybuffer[i] = 0x7F;  // All segments
+        }
+        ledDisplay.writeDisplay();
+        giveSemaphore();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        
+        // Test 2: Count 0-9 on all digits
+        Serial.println("Test 2: COUNTING 0-9");
+        for (uint8_t digit = 0; digit <= 9; digit++) {
+            uint32_t displayNum = 0;
+            for (uint8_t pos = 0; pos < 6; pos++) {
+                displayNum = displayNum * 10 + digit;
+            }
+            updateLEDScore(displayNum);
+            vTaskDelay(pdMS_TO_TICKS(500));
+        }
+        
+        // Reset to 000000
+        updateLEDScore(0);
+    }
+    
+    Serial.println("\n=== Display Test Complete ===\n");
+}
+
+void diagnosticSoundTest() {
+    Serial.println("\n========================================");
+    Serial.println("  DIAGNOSTIC: SOUND SYSTEM TEST");
+    Serial.println("========================================");
+    
+    Serial.println("Testing all sound effects...\n");
+    
+    Serial.println("1. Bumper");
+    playCaptainFantasticSound(SND_BUMPER);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    Serial.println("2. Slingshot");
+    playCaptainFantasticSound(SND_SLINGSHOT);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    Serial.println("3. Target");
+    playCaptainFantasticSound(SND_TARGET);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    Serial.println("4. Rollover");
+    playCaptainFantasticSound(SND_ROLLOVER);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    Serial.println("5. Special (rising)");
+    playCaptainFantasticSound(SND_SPECIAL);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    Serial.println("6. Drain (descending)");
+    playCaptainFantasticSound(SND_DRAIN);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    Serial.println("\n=== Sound Test Complete ===\n");
+}
+
+void runDiagnosticMode() {
+    Serial.println("\n\n****************************************");
+    Serial.println("***  ENTERING DIAGNOSTIC TEST MODE  ***");
+    Serial.println("****************************************");
+    Serial.println("Factory test procedures active");
+    Serial.println("Running Bally standardized tests...\n");
+    
+    testModeActive = true;
+    
+    // Disable normal game operation
+    bool savedSolenoidState = solenoidEnabled;
+    bool savedDisplayState = displayEnabled;
+    solenoidEnabled = false;
+    displayEnabled = false;
+    
+    // Run test sequence
+    diagnosticDisplayTest();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    diagnosticLampTest();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    diagnosticSwitchTest();  // Interactive - waits for test switch release
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    diagnosticSolenoidTest();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    diagnosticSoundTest();
+    
+    // Restore normal operation
+    solenoidEnabled = savedSolenoidState;
+    displayEnabled = savedDisplayState;
+    testModeActive = false;
+    
+    Serial.println("****************************************");
+    Serial.println("***   DIAGNOSTIC MODE COMPLETE      ***");
+    Serial.println("****************************************");
+    Serial.println("Returning to normal operation\n");
+}
+
+// ========== EM-STYLE GAME LOGIC ==========
+
+void startGame(uint8_t players) {
+    Serial.println("\n=== GAME START ===");
+    Serial.printf("Players: %d\n", players);
+    
+    gameState.numPlayers = players;
+    gameState.currentPlayer = 1;
+    gameState.currentBall = 1;
+    gameState.gameOver = false;
+    
+    // Reset all player scores
+    for (int i = 0; i < 4; i++) {
+        gameState.playerScores[i] = 0;
+    }
+    
+    // Clear all features
+    gameState.bonusValue = 0;
+    gameState.multiplier = 1;
+    gameState.extraBallLit = false;
+    gameState.tiltActive = false;
+    
+    currentScore = 0;
+    updateLEDScore(0);
+    
+    
+    // Start first ball
+    startBall();
+}
+
+void startBall() {
+    Serial.printf("\n=== Ball %d - Player %d ===\n", gameState.currentBall, gameState.currentPlayer);
+    
+    // Reset per-ball features (like EM relays drop)
+    gameState.bonusValue = 0;
+    gameState.multiplier = 1;
+    gameState.tiltActive = false;
+    
+    // Clear certain lamps, light ball indicators
+    // TODO: Light current ball lamp, light current player lamp
+    
+    gameState.ballInPlay = true;
+    gameState.ballStartTime = millis();
+    currentScore = gameState.playerScores[gameState.currentPlayer - 1];
+    updateLEDScore(currentScore);
+    
+    // Play ball start sound
+    playCaptainFantasticSound(SND_STARTUP);
+}
+
+void endBall() {
+    if (!gameState.ballInPlay) return;
+    
+    Serial.println("\n=== BALL DRAIN ===");
+    gameState.ballInPlay = false;
+    
+    // Save current player score
+    gameState.playerScores[gameState.currentPlayer - 1] = currentScore;
+    
+    // EM-style bonus countdown sequence
+    bonusCountdown();
+    
+    // Advance to next player or ball
+    if (gameState.currentPlayer < gameState.numPlayers) {
+        // Next player, same ball
+        gameState.currentPlayer++;
+        startBall();
+    } else {
+        // Next ball, back to player 1
+        gameState.currentPlayer = 1;
+        
+        if (gameState.currentBall < 5) {
+            gameState.currentBall++;
+            vTaskDelay(pdMS_TO_TICKS(2000));  // Pause between balls
+            startBall();
+        } else {
+            // Game over
+            endGame();
+        }
+    }
+}
+
+void bonusCountdown() {
+    if (gameState.bonusValue == 0) {
+        Serial.println("No bonus to collect");
+        return;
+    }
+    
+    Serial.printf("Collecting bonus: %dK x %dX\n", gameState.bonusValue, gameState.multiplier);
+    
+    
+    // EM-style: Step down bonus, add to score with sound
+    for (int i = gameState.bonusValue; i > 0; i--) {
+        uint32_t bonusPoints = 1000 * gameState.multiplier;
+        currentScore += bonusPoints;
+        updateLEDScore(currentScore);
+        
+        Serial.printf("  %dK... Score: %d\n", i, currentScore);
+        playCaptainFantasticSound(SND_BONUS_COUNT);
+        vTaskDelay(pdMS_TO_TICKS(300));  // Like stepper motor clicks
+    }
+    
+    // Save final score
+    gameState.playerScores[gameState.currentPlayer - 1] = currentScore;
+    Serial.printf("Final score: %d\n", currentScore);
+}
+
+void endGame() {
+    Serial.println("\n========================================");
+    Serial.println("          GAME OVER");
+    Serial.println("========================================");
+    
+    gameState.gameOver = true;
+    gameState.ballInPlay = false;
+    
+    
+    // Show final scores
+    for (int i = 0; i < gameState.numPlayers; i++) {
+        Serial.printf("Player %d: %d\n", i + 1, gameState.playerScores[i]);
+        
+        // Display each player's score briefly
+        updateLEDScore(gameState.playerScores[i]);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    
+    // Play game over sound
+    playCaptainFantasticSound(SND_DRAIN);
+    
+    Serial.println("\nInsert coin or press START");
+    
+    
+    // TODO: Enter attract mode (cycling lamps)
+}
+
+void addScore(uint32_t points) {
+    if (!gameState.ballInPlay || gameState.tiltActive) return;
+    
+    // Apply multiplier (EM-style)
+    uint32_t totalPoints = points * gameState.multiplier;
+    currentScore += totalPoints;
+    
+    // Enforce 6-digit limit
+    if (currentScore > 999999) {
+        currentScore = 999999;
+    }
+    
+    updateLEDScore(currentScore);
+}
+
+void advanceBonus() {
+    if (gameState.bonusValue < 10) {
+        gameState.bonusValue++;
+        Serial.printf("Bonus advanced: %dK\n", gameState.bonusValue);
+        // TODO: Light corresponding bonus lamp
+    }
+}
+
+void setMultiplier(uint8_t mult) {
+    if (mult == 1 || mult == 2 || mult == 3 || mult == 5) {
+        gameState.multiplier = mult;
+        Serial.printf("Multiplier set: %dX\n", mult);
+        // TODO: Light multiplier lamps
+    }
+}
+
+// ========== SHIFT REGISTER (74HC595) FUNCTIONS ==========
+
+void init74HC138() {
+    // Initialize shift register control pins
+    pinMode(SR_DATA, OUTPUT);
+    pinMode(SR_CLOCK, OUTPUT);
+    pinMode(SR_LATCH, OUTPUT);
+    
+    digitalWrite(SR_DATA, LOW);
+    digitalWrite(SR_CLOCK, LOW);
+    digitalWrite(SR_LATCH, LOW);
+    
+    // Initialize shift registers
+    // Bits 11-12 (LEDs) HIGH to turn OFF (active-low LEDs)
+    // All other bits LOW (columns, solenoids OFF)
+    shiftRegisterState = (1 << SR_BIT_LED9) | (1 << SR_BIT_LED10);  // 0x1800
+    updateShiftRegister();
+    
+    currentSolenoidNumber = 0xFF;  // None selected
+    
+    Serial.printf("      GPIOs: DATA=%d, CLOCK=%d, LATCH=%d\n", SR_DATA, SR_CLOCK, SR_LATCH);
+}
+
+// Update both 74HC595 shift registers with current state
+void updateShiftRegister() {
+    digitalWrite(SR_LATCH, LOW);  // Prepare to shift data
+    delayMicroseconds(1);  // Ensure latch is LOW
+    
+    // Shift out 16 bits, MSB first (bit 15 down to bit 0)
+    // This sends bits to U1 first, then U9 (daisy chain)
+    for (int8_t i = 15; i >= 0; i--) {
+        digitalWrite(SR_CLOCK, LOW);
+        digitalWrite(SR_DATA, (shiftRegisterState & (1 << i)) ? HIGH : LOW);
+        delayMicroseconds(1);  // Setup time
+        digitalWrite(SR_CLOCK, HIGH);  // Clock in the bit
+        delayMicroseconds(1);  // Hold time
+    }
+    
+    digitalWrite(SR_LATCH, HIGH);  // Latch data to outputs
+    delayMicroseconds(1);  // Ensure outputs update
+}
+
+// Set a single bit in the shift register
+void setBit(uint8_t bitNum, bool state) {
+    if (bitNum > 15) return;
+    uint16_t mask = (1 << bitNum);
+    if (state) {
+        requestShiftRegisterUpdate(mask, true); // OR mask
+    } else {
+        // To clear, send the full state with the bit cleared
+        requestShiftRegisterUpdate(~mask, false); // Absolute set, bit cleared
+    }
+}
+
+void setFireSolenoid(uint8_t number, bool state) {
+    if (number > 5) return;
+    // Map solenoid number to shift register bit (bits 5-10)
+    uint8_t bitNum = SR_BIT_SOL0 + number;
+    setBit(bitNum, state);
+    currentSolenoidNumber = state ? number : 0xFF;
+}
+
+void allSolenoidsOff() {
+    // Clear all solenoid bits: 5-10
+    // Keep LED bits 11,12 unchanged
+    shiftRegisterState &= ~((1<<5) | (1<<6) | (1<<7) | (1<<8) | (1<<9) | (1<<10));
+    updateShiftRegister();
+    currentSolenoidNumber = 0xFF;
+}
+
+// ========== DISPLAY FUNCTIONS ==========
+
+// Forward declarations
+void updateLEDScore(uint32_t score);
+void setLamp(uint8_t row, uint8_t col, bool state);
+
+void testDisplaySegments() {
+    if (takeSemaphore("display", pdMS_TO_TICKS(1000))) {
+        Serial.println("\n=== Display Position Detection Test ===");
+        
+        // Test positions 0-7 individually to see which ones work
+        Serial.println("Testing each position 0-7 individually...");
+        Serial.println("Watch which physical digits light up!");
+        
+        for (uint8_t pos = 0; pos <= 7; pos++) {
+            ledDisplay.clear();
+            ledDisplay.writeDigitNum(pos, pos, false);  // Show position number
+            ledDisplay.writeDisplay();
+            
+            Serial.print("Position ");
+            Serial.print(pos);
+            Serial.print(" = showing '");
+            Serial.print(pos);
+            Serial.println("' - which physical digit is this?");
+            
+            giveSemaphore();
+            vTaskDelay(pdMS_TO_TICKS(1500));
+            if (!takeSemaphore("display", pdMS_TO_TICKS(1000))) return;
+        }
+        
+        // Show all working positions with 8
+        Serial.println("\nTesting all positions 0-7 with '8'...");
+        ledDisplay.clear();
+        for (uint8_t i = 0; i <= 7; i++) {
+            ledDisplay.writeDigitNum(i, 8, false);
+        }
+        ledDisplay.writeDisplay();
+        Serial.println("All positions set to '8' - count how many digits show");
+        
+        giveSemaphore();
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        
+        Serial.println("\n=== Test Complete ===");
+        Serial.println("Report which positions worked!");
+        
+        // Return to normal display
+        updateLEDScore(currentScore);
+    }
+}
+
+void updateLEDScore(uint32_t score) {
+    if (takeSemaphore("display", pdMS_TO_TICKS(1000))) {
+        // Clamp to 6 digits
+        if (score > 999999) score = 999999;
+        
+        // Clear display buffer
+        ledDisplay.clear();
+        
+        // Use writeDigitRaw() to bypass clock formatting - write directly to HT16K33 buffer
+        // Segment patterns for digits 0-9 (from Adafruit library)
+        const uint8_t digitPatterns[10] = {
+            0x3F, // 0
+            0x06, // 1
+            0x5B, // 2
+            0x4F, // 3
+            0x66, // 4
+            0x6D, // 5
+            0x7D, // 6
+            0x07, // 7
+            0x7F, // 8
+            0x6F  // 9
+        };
+        
+        // Library writeDigitRaw() rejects positions > 4!
+        // Use direct displaybuffer[] access for ALL positions 0-7
+        // displaybuffer[8] is public in Adafruit_LEDBackpack base class
+        ledDisplay.displaybuffer[0] = digitPatterns[(score / 100000) % 10];
+        ledDisplay.displaybuffer[1] = digitPatterns[(score / 10000) % 10];
+        ledDisplay.displaybuffer[2] = digitPatterns[(score / 1000) % 10];
+        ledDisplay.displaybuffer[3] = digitPatterns[(score / 100) % 10];
+        ledDisplay.displaybuffer[4] = digitPatterns[(score / 10) % 10];
+        ledDisplay.displaybuffer[5] = digitPatterns[score % 10];
+        // Positions 6 and 7 available if you wired 8 displays
+        
+        // Update display
+        ledDisplay.writeDisplay();
+        
+        giveSemaphore();
+    }
+}
+
+void initDisplay() {
+    if (takeSemaphore("initDisplay")) {
+        if (!ledDisplay.begin(HT16K33_ADDRESS, &Wire)) {
+            Serial.println("      ERROR: HT16K33 not responding!");
+            Serial.println("      Check: I2C wiring, address jumpers, power");
+            giveSemaphore();
+            return;
+        }
+        
+        Serial.printf("      I2C Address: 0x%02X\n", HT16K33_ADDRESS);
+        // ...existing code...
+        
+        // Set brightness (0-15, 15 is brightest)
+        ledDisplay.setBrightness(15);
+        
+        // Display test pattern - write directly to displaybuffer[] to bypass library limit
+        Serial.println("      Test: All segments briefly lit...");
+        ledDisplay.clear();
+        // Direct displaybuffer access - library writeDigitRaw() rejects positions > 4
+        ledDisplay.displaybuffer[0] = 0x7F;  // All segments (8)
+        ledDisplay.displaybuffer[1] = 0x7F;
+        ledDisplay.displaybuffer[2] = 0x7F;
+        ledDisplay.displaybuffer[3] = 0x7F;
+        ledDisplay.displaybuffer[4] = 0x7F;
+        ledDisplay.displaybuffer[5] = 0x7F;
+        ledDisplay.displaybuffer[6] = 0x7F;
+        ledDisplay.displaybuffer[7] = 0x7F;
+        ledDisplay.writeDisplay();
+        
+        vTaskDelay(pdMS_TO_TICKS(500));
+        
+        // Show initial score of 0
+        updateLEDScore(0);
+        
+        giveSemaphore();
+    }
+}
+
+// ========== I2C SCAN ==========
+
+void scanI2C() {
+    if (takeSemaphore("i2cScan")) {
+        // Scan Bus 0 (HT16K33 Display only - Solenoids now on 74HC138)
+        Serial.println("\n=== I2C Bus 0 Scan (Display) ===");
+        uint8_t deviceCount = 0;
+        
+        for (uint8_t address = 1; address < 127; address++) {
+            Wire.beginTransmission(address);
+            uint8_t error = Wire.endTransmission();
+            
+            if (error == 0) {
+                Serial.print("Found device at 0x");
+                if (address < 16) Serial.print("0");
+                Serial.print(address, HEX);
+                
+                if (address == HT16K33_ADDRESS) {
+                    Serial.println(" (HT16K33 - LED 7-Segment Display)");
+                } else {
+                    Serial.println();
+                }
+                deviceCount++;
+            }
+        }
+        Serial.print("Total devices: ");
+        Serial.println(deviceCount);
+        Serial.println("====================\n");
+        giveSemaphore();
+    }
+}
+
+// ========== FREERTOS TASKS ==========
+
+void displayTask(void* parameter) {
+    DisplayMessage msg;
+    
+    // TEST: Turn on specific lamps for visual confirmation
+    // Row/Col are zero-based: lampMatrix[row][col]
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++)
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++)
+            lampMatrix[r][c] = false;
+    lampMatrix[0][3] = true; // Row 1, Lamp 4 (col 3)
+    lampMatrix[1][2] = true; // Row 2, Lamp 3 (col 2)
+    lampMatrix[2][1] = true; // Row 3, Lamp 2 (col 1)
+    lampMatrix[3][0] = true; // Row 4, Lamp 1 (col 0)
+
+    // Turn on solenoid 3 (bit 8)
+    for (uint8_t s = 5; s <= 10; ++s) solenoidState[s] = false;
+    solenoidState[8] = true;
+
+    while (true) {
+        if (displayEnabled) {
+            // Check for messages from queue (for manual score updates)
+            if (xQueueReceive(displayQueue, &msg, 0) == pdTRUE) {
+                // Manual score update
+                updateLEDScore(currentScore);
+                Serial.print("[Display Task] Score updated: ");
+                Serial.println(currentScore);
+            } else {
+                // Auto-demo: increment score
+                updateLEDScore(currentScore);
+                
+                Serial.print("[Display Task] Score: ");
+                Serial.println(currentScore);
+                
+                // Auto-increment score for demo
+                currentScore += 1111;
+                if (currentScore > 999999) currentScore = 0;
+            }
+        }
+        
+        // Run every 2 seconds for demo
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+void solenoidTask(void* parameter) {
+    uint8_t currentSolenoid = 0;
+    bool state = false;
+    SolenoidMessage msg;
+    
+    while (true) {
+        if (solenoidEnabled) {
+            // Check for messages from queue
+            if (xQueueReceive(solenoidQueue, &msg, 0) == pdTRUE) {
+                setFireSolenoid(msg.number, msg.state);
+                Serial.print("[Solenoid Task] Manual: ");
+                Serial.print(msg.number);
+                Serial.println(msg.state ? " ON" : " OFF");
+            } else {
+                // Auto-cycle for demo
+                const TickType_t xFrequency = pdMS_TO_TICKS(2000); // 2s per update
+                TickType_t xLastWakeTime = xTaskGetTickCount();
+                while (true) {
+                    if (displayEnabled) {
+                        // Check for messages from queue (for manual score updates)
+                        if (xQueueReceive(displayQueue, &msg, 0) == pdTRUE) {
+                            // Manual score update
+                            updateLEDScore(currentScore);
+                            Serial.print("[Display Task] Score updated: ");
+                            Serial.println(currentScore);
+                        } else {
+                            // Auto-demo: increment score
+                            updateLEDScore(currentScore);
+                            Serial.print("[Display Task] Score: ");
+                            Serial.println(currentScore);
+                            // Auto-increment score for demo
+                            currentScore += 1111;
+                            if (currentScore > 999999) currentScore = 0;
+                        }
+                    }
+                    vTaskDelayUntil(&xLastWakeTime, xFrequency); // Yield to RTOS until next update
+                }
+// ========== LAMP MATRIX TASK ==========
+
+// ========== COMBINED MATRIX TASK (TIGHT LOOP) ==========
+// Handles both switch scanning AND lamp refresh in time-division
+// No GPIO conflicts, deterministic timing
+
+void matrixTask(void* parameter) {
+    // Restore: For each row, set all columns based on lampMatrix, update shift register once per row
+    const TickType_t xFrequency = pdMS_TO_TICKS(5); // 5ms per scan (200Hz)
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+    while (true) {
+        for (uint8_t row = 0; row < NUM_LAMP_ROWS; row++) {
+            // 1. Set all columns OFF, update shift register
+            uint16_t sr_off = shiftRegisterState & ~0x1F; // Clear lamp column bits (0-4)
+            if ((shiftRegisterState & 0x1F) != 0) {
+                shiftRegisterState = sr_off;
+                updateShiftRegister();
+            }
+            delayMicroseconds(2);
+
+            // 2. Activate only the current row, instrument timing on GPIO 13
+            digitalWrite(13, HIGH); // Start timing
+            digitalWrite(rowPins[row], HIGH);
+            digitalWrite(13, LOW);  // End timing
+            delayMicroseconds(2);
+
+            // 3. Set columns for this row, update shift register
+            uint16_t sr = 0;
+            for (uint8_t col = 0; col < NUM_LAMP_COLS; col++) {
+                if (lampMatrix[row][col]) {
+                    sr |= (1 << col);
+                }
+            }
+            for (uint8_t s = 5; s <= 10; ++s) {
+                if (solenoidState[s]) sr |= (1 << s);
+            }
+            if (statusLedState[0]) sr |= (1 << 11);
+            if (statusLedState[1]) sr |= (1 << 12);
+            if (shiftRegisterState != sr) {
+                shiftRegisterState = sr;
+                updateShiftRegister();
+            }
+
+            // 4. Hold row active for 0.6ms (600us)
+            delayMicroseconds(600);
+
+            // 5. Set all columns OFF, update shift register
+            sr_off = shiftRegisterState & ~0x1F;
+            if ((shiftRegisterState & 0x1F) != 0) {
+                shiftRegisterState = sr_off;
+                updateShiftRegister();
+            }
+            // 6. Deactivate current row, instrument timing on GPIO 13
+            digitalWrite(13, HIGH); // Start timing
+            digitalWrite(rowPins[row], LOW);
+            digitalWrite(13, LOW);  // End timing
+        }
+        vTaskDelayUntil(&xLastWakeTime, xFrequency); // Yield to RTOS until next scan
+    }
+}
+
+// ========== SWITCH DEBOUNCE TASK (SEPARATE, LOWER PRIORITY) ==========
+// Processes raw switch readings and generates validated events
+
+void debounceTask(void* parameter) {
+    while (true) {
+        uint32_t now = millis();
+        
+        // Process all switch positions (restore original debounce logic here)
+        for (uint8_t row = 0; row < NUM_SWITCH_ROWS; row++) {
+            for (uint8_t col = 0; col < NUM_SWITCH_COLS; col++) {
+                // ...existing debounce logic...
+            }
+        }
+        
+        // Handle serial commands
+        if (Serial.available()) {
+            char cmd = Serial.read();
+            
+            const TickType_t xFrequency = pdMS_TO_TICKS(500); // 500ms per cycle
+            TickType_t xLastWakeTime = xTaskGetTickCount();
+            while (true) {
+                if (solenoidEnabled) {
+                    // Check for messages from queue
+                    if (xQueueReceive(solenoidQueue, &msg, 0) == pdTRUE) {
+                        setFireSolenoid(msg.number, msg.state);
+                        Serial.print("[Solenoid Task] Manual: ");
+                        Serial.print(msg.number);
+                        Serial.println(msg.state ? " ON" : " OFF");
+                    } else {
+                        // Auto-cycle for demo
+                        if (state) {
+                            // Turn off
+                            allSolenoidsOff();
+                            currentSolenoid++;
+                            if (currentSolenoid > 7) currentSolenoid = 0;
+                        } else {
+                            // Turn on
+                            setFireSolenoid(currentSolenoid, true);
+                            Serial.print("[Solenoid Task] Auto: ");
+                            Serial.print(currentSolenoid);
+                            Serial.println(" ON");
+                        }
+                        state = !state;
+                    }
+                }
+                vTaskDelayUntil(&xLastWakeTime, xFrequency); // Yield to RTOS until next scan
+            }
+        }
+                                }
+                                for (uint8_t s = 5; s <= 10; ++s) {
+                                    if (solenoidState[s]) sr |= (1 << s);
+                                }
+                                const TickType_t xFrequency = pdMS_TO_TICKS(10); // 10ms debounce period
+                                TickType_t xLastWakeTime = xTaskGetTickCount();
+                                while (true) {
+                                    uint32_t now = millis();
+                                    // Process all switch positions (restore original debounce logic here)
+                                    for (uint8_t row = 0; row < NUM_SWITCH_ROWS; row++) {
+                                        for (uint8_t col = 0; col < NUM_SWITCH_COLS; col++) {
+                                            // ...existing debounce logic...
+                                        }
+                                    }
+                                    // Handle serial commands
+                                    if (Serial.available()) {
+                                        char cmd = Serial.read();
+                                        switch (cmd) {
+                                            case 's':
+                                                solenoidEnabled = !solenoidEnabled;
+                                                Serial.print("Solenoids: ");
+                                                Serial.println(solenoidEnabled ? "ENABLED" : "DISABLED");
+                                                // Matrix scan loop omitted for brevity; implement as needed
+                                                break;
+                                            case 'p':
+                                                triggerSound(SND_SPECIAL);
+                                                Serial.println("Sound: Special (rising pitch)");
+                                                break;
+                                            case 'r':
+                                                triggerSound(SND_DRAIN);
+                                                Serial.println("Sound: Drain (descending)");
+                                                break;
+                                            case 't':
+                                                testLampSequence();
+                                                break;
+                                            case 'z':
+                                                minimalLampTest();
+                                                break;
+                                            case 'T':
+                                                // Test display segments
+                                                testDisplaySegments();
+                                                break;
+                                            case 'X':
+                                                // Test shift register - cycle all bits on/off
+                                                Serial.println("\n=== SHIFT REGISTER BIT TEST ===");
+                                                Serial.println("Cycling all 16 bits ON/OFF every 500ms");
+                                                Serial.println("Press any key to stop...\n");
+                                                for (int cycle = 0; cycle < 20 && !Serial.available(); cycle++) {
+                                                    // All bits ON
+                                                    // ...existing code...
+                                                }
+                                                break;
+                                        }
+                                    }
+                                    vTaskDelayUntil(&xLastWakeTime, xFrequency); // Yield to RTOS until next debounce
+                                }
+                        digitalWrite(SR_DATA, LOW);
+                        Serial.printf("Cycle %d: GPIO2 LOW (0V)\n", i);
+                        delay(20);
+                    }
+                    
+                    // Clear any key press
+                    while (Serial.available()) Serial.read();
+                    
+                    Serial.println("\n=== GPIO2 TEST COMPLETE ===");
+                    Serial.println("Expected: Clean 25Hz square wave (20ms HIGH, 20ms LOW)");
+                    Serial.println("If you see this, GPIO2 is working correctly!\n");
+                    
+                    // Re-initialize shift register
+                    shiftRegisterState = (1 << SR_BIT_LED9) | (1 << SR_BIT_LED10);
+                    updateShiftRegister();
+                    break;
+                
+                case 'g':
+                    // Direct test - Lamp 1 (Row M1=GPIO15, Col L4=SR bit 1)
+                    Serial.println("\n=== SHIFT REGISTER TEST - LAMP 1 ===");
+                    Serial.println("Lamp 1 = Row M1 (GPIO15) + Col L4 (SR bit 1)");
+                    Serial.println("\nTest 1: Row HIGH, Col LOW");
+                    digitalWrite(ROW_M1, HIGH);  // GPIO15 HIGH -> ULN2803A inverts -> P-ch gate LOW -> Row ON
+                    setBit(SR_BIT_L4, false);    // Col L4 OFF
+                    Serial.println("  GPIO15=HIGH, SR_BIT_L4=LOW");
+                    delay(2000);
+                    
+                    Serial.println("\nTest 2: Row HIGH, Col HIGH");
+                    digitalWrite(ROW_M1, HIGH);  // Row ON
+                    setBit(SR_BIT_L4, true);     // Col L4 ON
+                    Serial.println("  GPIO15=HIGH, SR_BIT_L4=HIGH (LAMP SHOULD BE ON)");
+                    delay(2000);
+                    
+                    Serial.println("\nTest 3: Row LOW, Col HIGH");
+                    digitalWrite(ROW_M1, LOW);   // GPIO15 LOW -> ULN2803A inverts -> P-ch gate HIGH -> Row OFF
+                    setBit(SR_BIT_L4, true);     // Col L4 ON
+                    Serial.println("  GPIO15=LOW, SR_BIT_L4=HIGH");
+                    delay(2000);
+                    
+                    Serial.println("\nTest 4: Row LOW, Col LOW (both OFF)");
+                    digitalWrite(ROW_M1, LOW);
+                    setBit(SR_BIT_L4, false);
+                    Serial.println("  GPIO15=LOW, SR_BIT_L4=LOW");
+                    Serial.println("=== TEST COMPLETE ===\n");
+                    break;
+                
+                case 'c':
+                    // Clear/zero score
+                    currentScore = 0;
+                    updateLEDScore(currentScore);
+                    Serial.println("Score cleared to 0");
+                    break;
+                    
+                case '+':
+                    // Increment score by 1000
+                    currentScore += 1000;
+                    if (currentScore > 999999) currentScore = 999999;
+                    updateLEDScore(currentScore);
+                    Serial.print("Score: ");
+                    Serial.println(currentScore);
+                    break;
+                    
+                case '-':
+                    // Decrement score by 1000
+                    if (currentScore >= 1000) currentScore -= 1000;
+                    else currentScore = 0;
+                    updateLEDScore(currentScore);
+                    Serial.print("Score: ");
+                    Serial.println(currentScore);
+                    break;
+                    
+                case '0':
+                case '5':
+                case '6':
+                case '7': {
+                    uint8_t num = cmd - '0';
+                    SolenoidMessage msg = {num, true};
+                    xQueueSend(solenoidQueue, &msg, 0);
+                    Serial.print("Manual fire: ");
+                    Serial.println(num);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    msg.state = false;
+                    xQueueSend(solenoidQueue, &msg, 0);
+                    break;
+                }
+                    
+                case 'x':
+                    Serial.println("All solenoids OFF");
+                    allSolenoidsOff();
+                    break;
+                    
+                case '9':
+                    // Toggle LED9 (bit 11) - active LOW
+                    setBit(SR_BIT_LED9, !(shiftRegisterState & (1 << SR_BIT_LED9)));
+                    Serial.printf("LED9 (bit 11): %s (output %s)\n", 
+                        (shiftRegisterState & (1 << SR_BIT_LED9)) ? "OFF" : "ON",
+                        (shiftRegisterState & (1 << SR_BIT_LED9)) ? "HIGH" : "LOW");
+                    break;
+                    
+                case '!':
+                    // Toggle LED10 (bit 12) - active LOW
+                    setBit(SR_BIT_LED10, !(shiftRegisterState & (1 << SR_BIT_LED10)));
+                    Serial.printf("LED10 (bit 12): %s (output %s)\n", 
+                        (shiftRegisterState & (1 << SR_BIT_LED10)) ? "OFF" : "ON",
+                        (shiftRegisterState & (1 << SR_BIT_LED10)) ? "HIGH" : "LOW");
+                    break;
+                    
+                case 'i':
+                    scanI2C();
+                    break;
+                    
+                case 'R':
+                    // Show shift register state
+                    Serial.printf("Shift Register State: 0x%04X (binary: ", shiftRegisterState);
+                    for (int i = 15; i >= 0; i--) {
+                        Serial.print((shiftRegisterState & (1 << i)) ? '1' : '0');
+                        if (i == 8) Serial.print(' ');  // Space between bytes
+                    }
+                    Serial.println(")");
+                    Serial.printf("  Bits 0-4 (L3-L7 columns): 0x%02X\n", shiftRegisterState & 0x1F);
+                    Serial.printf("  Bits 8-10 (SOL 0-2): 0x%02X\n", (shiftRegisterState >> 8) & 0x07);
+                    Serial.printf("  Bits 11-12 (LEDs 9-10): 0x%02X\n", (shiftRegisterState >> 11) & 0x03);
+                    Serial.printf("  Bits 13-15 (SOL 5-7): 0x%02X\n", (shiftRegisterState >> 13) & 0x07);
+                    break;
+                    
+                case '?':
+                    Serial.println("\n========== COMMAND REFERENCE ==========");
+                    Serial.println("\nSystem Control:");
+                    Serial.println("  s - Toggle solenoids");
+                    Serial.println("  d - Toggle display");
+                    Serial.println("  l/w - Toggle matrix (switches+lamps)");
+                    Serial.println("  a - Toggle sound");
+                    
+                    Serial.println("\nManual Tests:");
+                    Serial.println("  t - Test lamp sequence");
+                    Serial.println("  T - Test display segments");
+                    Serial.println("  X - Test shift register (cycle all bits)");
+                    Serial.println("  G - Test GPIO2 pin");
+                    Serial.println("  i - Scan I2C bus");
+                    Serial.println("  0-7 - Fire solenoid");
+                    Serial.println("  x - All solenoids OFF");
+                    Serial.println("  9 - Toggle LED9 (shift register bit 11)");
+                    Serial.println("  ! - Toggle LED10 (shift register bit 12)");
+                    Serial.println("  R - Show shift register state");
+                    
+                    Serial.println("\nScore Control:");
+                    Serial.println("  c - Clear score to 0");
+                    Serial.println("  + - Add 1000 to score");
+                    Serial.println("  - - Subtract 1000 from score");
+                    
+                    Serial.println("\nSound Effects:");
+                    Serial.println("  b - Bumper");
+                    Serial.println("  n - Slingshot");
+                    Serial.println("  h - Target");
+                    Serial.println("  p - Special (rising)");
+                    Serial.println("  r - Drain (descending)");
+                    
+                    Serial.println("\nMusic Control:");
+                    Serial.println("  m - Toggle music on/off");
+                    Serial.println("  M - Stop music");
+                    Serial.println("  1 - Play track 1 (Pinball Wizard)");
+                    Serial.println("  2 - Play track 2 (Crocodile Rock)");
+                    Serial.println("  3 - Play track 3 (Bennie and the Jets)");
+                    Serial.println("  4 - Play track 4 (Goodbye Yellow Brick Road)");
+                    
+                    Serial.println("\n*** FACTORY DIAGNOSTICS ***");
+                    Serial.println("  Close TEST SWITCH (GPIO14) to run:");
+                    Serial.println("    1. Display test (all segments, count 0-9)");
+                    Serial.println("    2. Lamp matrix test (all on, sequential)");
+                    Serial.println("    3. Switch matrix test (live scan)");
+                    Serial.println("    4. Solenoid test (sequential fire)");
+                    Serial.println("    5. Sound system test (all effects)");
+                    Serial.println("=======================================\n");
+                    break;
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// ========== HARDWARE TIMER FOR REAL-TIME MATRIX SCAN ========== 
+#include "driver/timer.h"
+
+// ====== ESP32 Hardware Timer for Matrix Scan ======
+hw_timer_t* matrixTimer = nullptr;
+portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
+volatile uint8_t matrixISRRow = 0;
+volatile bool matrixISRFlag = false;
+
+void IRAM_ATTR onMatrixTimer() {
+    portENTER_CRITICAL_ISR(&timerMux);
+    matrixISRRow = (matrixISRRow + 1) % NUM_LAMP_ROWS;
+    matrixISRFlag = true;
+    portEXIT_CRITICAL_ISR(&timerMux);
+}
+
+void setupMatrixTimer() {
+    matrixTimer = timerBegin(0, 80, true); // 80MHz/80 = 1MHz, 1000 ticks = 1ms
+    timerAttachInterrupt(matrixTimer, &onMatrixTimer, true);
+    timerAlarmWrite(matrixTimer, 1000, true); // 1ms
+    timerAlarmEnable(matrixTimer);
+}
+
+void setup() {
+    // Create a queue for shift register updates (robust, no lost signals)
+    shiftRegRequestQueue = xQueueCreate(16, sizeof(ShiftRegRequest));
+    if (shiftRegRequestQueue == NULL) {
+        while(1) { delay(1000); }
+    }
+    // Start the shift register test task for hardware verification
+    if (ENABLE_SR_TEST_TASK) {
+        xTaskCreatePinnedToCore(shiftRegisterTestTask, "SRTestTask", 2048, NULL, 1, NULL, 0);
+    }
+    Serial.begin(115200);
+    delay(1000);
+
+    // ========== W25Q64 BLOCK TEST (EPROM-style) ==========
+    Serial.println("\n[W25Q64 Test] Booting...");
+    flash.begin();
+    uint8_t status = flash.readStatus();
+    Serial.print("[W25Q64] Status Register: 0x");
+    Serial.println(status, HEX);
+    // Block test parameters
+    const uint32_t blockAddr = 0x000200;
+    const size_t blockLen = 256;
+    uint8_t pattern[blockLen];
+    // Fill pattern (e.g., 0x00, 0x01, ..., 0xFF)
+    for (size_t i = 0; i < blockLen; ++i) pattern[i] = (uint8_t)i;
+    // Write block
+    Serial.print("[W25Q64] Writing block at 0x");
+    Serial.print(blockAddr, HEX);
+    Serial.print(" (length "); Serial.print(blockLen); Serial.println(")...");
+    for (size_t i = 0; i < blockLen; ++i) flash.writeByte(blockAddr + i, pattern[i]);
+    // Read back and verify
+    bool blockPass = true;
+    size_t firstErr = blockLen;
+    for (size_t i = 0; i < blockLen; ++i) {
+        uint8_t val = flash.readByte(blockAddr + i);
+        if (val != pattern[i]) {
+            blockPass = false;
+            firstErr = i;
+            break;
+        }
+    }
+    if (blockPass) {
+        Serial.println("[W25Q64] [PASS] Block R/W test successful!");
+    } else {
+        Serial.print("[W25Q64] [FAIL] Block test error at offset 0x");
+        Serial.print(firstErr, HEX);
+        Serial.print(": expected 0x");
+        Serial.print(pattern[firstErr], HEX);
+        Serial.print(", read 0x");
+        Serial.println(flash.readByte(blockAddr + firstErr), HEX);
+    }
+    w25q64Tested = true;
+    
+    // ========== AUDIO TEST MODE - MINIMAL LOGGING ==========
+    Serial.println("\n[AUDIO TEST] Captain Fantastic - MP3 Playback Test");
+    Serial.println("[AUDIO TEST] WiFi Streaming + SPIFFS Fallback Mode\n");
+    
+    // Initialize WiFi first
+    // DISABLED FOR TONE TEST: initWiFi();
+    
+    // Initialize I2C (silent)
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(I2C_FREQ);
+    
+    // ========== STEP 3: RTOS OBJECTS (SILENT) ==========
+    
+    i2cSemaphore = xSemaphoreCreateMutex();
+    if (i2cSemaphore == NULL) {
+        while(1) { delay(1000); }
+    }
+    
+    displayQueue = xQueueCreate(10, sizeof(DisplayMessage));
+    solenoidQueue = xQueueCreate(10, sizeof(SolenoidMessage));
+    soundQueue = xQueueCreate(20, sizeof(SoundMessage));
+    
+    if (displayQueue == NULL || solenoidQueue == NULL || soundQueue == NULL) {
+        while(1) { delay(1000); }
+    }
+    
+    // ========== STEP 4: I2C DEVICE SCAN (SILENT) ==========
+    
+    // ========== STEP 5: HARDWARE INITIALIZATION (SILENT) ==========
+    init74HC138();
+    allSolenoidsOff();
+    initLampMatrix();
+    clearAllLamps();
+    initSwitchMatrix();
+    pinMode(TEST_SWITCH_PIN, INPUT_PULLUP);
+    // TEMPORARILY DISABLED: initDisplay(); // Hanging - I2C issue
+    pinMode(AUDIO_PIN, OUTPUT);
+    dacWrite(AUDIO_PIN, 128);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    
+    // ========== STEP 8: TASK CREATION ==========
+    
+    // ========== AUDIO TEST: DISABLE ALL TASKS EXCEPT SOUND ==========
+    // Enable all RTOS tasks
+    if (ENABLE_DISPLAY_TASK)
+        xTaskCreatePinnedToCore(displayTask, "DisplayTask", 4096, NULL, 1, &displayTaskHandle, 0);
+    if (ENABLE_MATRIX_TASK)
+        xTaskCreatePinnedToCore(matrixTask, "MatrixTask", 2048, NULL, 3, &matrixTaskHandle, 1);
+    if (ENABLE_SOLENOID_TASK)
+        xTaskCreatePinnedToCore(solenoidTask, "SolenoidTask", 4096, NULL, 2, &solenoidTaskHandle, 1);
+    if (ENABLE_DEBOUNCE_TASK)
+        xTaskCreatePinnedToCore(debounceTask, "DebounceTask", 4096, NULL, 1, &debounceTaskHandle, 1);
+
+    // Shift register update now handled in matrixTask; no separate task needed
+    // Example: start with all outputs off
+    shiftRegisterState = 0x0000;
+    updateShiftRegister();
+
+    // ========== GAME PLAY TEST TASK CREATION ========== 
+}
+
+
+// ========== TIMER-DRIVEN MATRIX SCAN HANDLER ========== 
+void handleMatrixScanFromISR() {
+    if (matrixISRFlag) {
+        portENTER_CRITICAL(&timerMux);
+        uint8_t row = matrixISRRow;
+        matrixISRFlag = false;
+        portEXIT_CRITICAL(&timerMux);
+        // Set all rows LOW except the current row
+        for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+            digitalWrite(rowPins[r], (r == row) ? HIGH : LOW);
+        }
+        // --- Lamp and solenoid cycling logic (moved from matrixTask) ---
+        static uint8_t lampCol = 0;
+        static uint32_t lastLampChange = 0;
+        static uint8_t solenoidIdx = 0;
+        static uint32_t lastSolenoidChange = 0;
+        uint32_t now = millis();
+        // Cycle lamps every 200ms
+        if (now - lastLampChange > 200) {
+            clearAllLamps();
+            setLamp(row, lampCol, true);
+            lampCol = (lampCol + 1) % NUM_LAMP_COLS;
+            lastLampChange = now;
+        }
+        // Cycle solenoids every 500ms
+        if (now - lastSolenoidChange > 500) {
+            allSolenoidsOff();
+            setFireSolenoid(solenoidIdx, true);
+            solenoidIdx = (solenoidIdx + 1) % 6;
+            lastSolenoidChange = now;
+        }
+        // --- End lamp/solenoid cycling ---
+    }
+}
+
+void loop() {
+    handleMatrixScanFromISR();
+    vTaskDelay(pdMS_TO_TICKS(1)); // Or do other work
+}

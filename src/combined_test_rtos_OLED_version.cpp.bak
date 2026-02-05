@@ -1,0 +1,978 @@
+/*
+ * Captain Fantastic - Combined Display + Solenoid Test (FreeRTOS Version)
+ * 
+ * Proper multi-tasking implementation:
+ * - Task 1: Display updates (Core 0, priority 1)
+ * - Task 2: Solenoid control (Core 1, priority 2 - higher)
+ * - I2C Semaphore: Protects shared I2C bus access
+ * - Message Queues: For inter-task communication
+ */
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// ========== HARDWARE CONFIGURATION ==========
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define SSD1306_ADDRESS 0x3C
+#define MCP23017_ADDRESS 0x20
+#define PCA9546_ADDRESS 0x70
+#define NUM_DISPLAYS 5
+
+// Virtual display buffer (5 displays = 640 pixels wide)
+#define VIRTUAL_WIDTH (SCREEN_WIDTH * NUM_DISPLAYS)
+#define VIRTUAL_HEIGHT SCREEN_HEIGHT
+#define BUFFER_SIZE ((VIRTUAL_WIDTH * VIRTUAL_HEIGHT) / 8)  // 1 bit per pixel
+
+// MCP23017 Registers
+#define IODIRA   0x00
+#define IODIRB   0x01
+#define GPIOA    0x12
+#define GPIOB    0x13
+
+// I2C Configuration - Bus 0 (MCP23017)
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define I2C_FREQ 100000
+
+// I2C Configuration - Bus 1 (Display)
+#define I2C1_SDA 16
+#define I2C1_SCL 17
+
+// ========== LAMP MATRIX CONFIGURATION ==========
+// Lamp Matrix: 8 rows × 4 columns = 32 lamps
+// Row drivers: ESP32 GPIO → ULN2803A → IRF4905 P-channel MOSFETs
+// Column drivers: ESP32 GPIO → IRLZ44N N-channel MOSFETs
+
+// Row pins (M1-M8) - P-channel via ULN2803A (inverted: HIGH = ON)
+#define ROW_M1  15  // GPIO15
+#define ROW_M2  16  // GPIO16  
+#define ROW_M3  17  // GPIO17
+#define ROW_M4   5  // GPIO5
+#define ROW_M5  18  // GPIO18
+#define ROW_M6  19  // GPIO19
+#define ROW_M7  23  // GPIO23
+#define ROW_M8  13  // GPIO13
+
+// Column pins (L4-L7) - N-channel direct (normal: HIGH = ON)
+#define COL_L4  27  // GPIO27
+#define COL_L5  26  // GPIO26
+#define COL_L6  33  // GPIO33
+#define COL_L7  32  // GPIO32
+
+#define NUM_LAMP_ROWS 8
+#define NUM_LAMP_COLS 4
+#define LAMP_REFRESH_RATE 200  // Hz (5ms per complete scan)
+
+// ========== GLOBAL OBJECTS ==========
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire1, OLED_RESET);
+
+// Virtual display buffer - 640x64 pixels (5120 bytes)
+// Using GFXcanvas1 for 1-bit monochrome canvas
+GFXcanvas1 virtualDisplay(VIRTUAL_WIDTH, VIRTUAL_HEIGHT);
+
+// Display tracking
+uint8_t currentMuxChannel = 0xFF;  // Track current mux channel
+
+// ========== LAMP MATRIX STATE ==========
+// Lamp state array: [row][col] - true = lamp ON
+bool lampMatrix[NUM_LAMP_ROWS][NUM_LAMP_COLS] = {0};
+
+// Row and column pin arrays
+const uint8_t rowPins[NUM_LAMP_ROWS] = {ROW_M1, ROW_M2, ROW_M3, ROW_M4, ROW_M5, ROW_M6, ROW_M7, ROW_M8};
+const uint8_t colPins[NUM_LAMP_COLS] = {COL_L4, COL_L5, COL_L6, COL_L7};
+
+// Task control
+volatile bool lampMatrixEnabled = true;
+
+// ========== FREERTOS OBJECTS ==========
+SemaphoreHandle_t i2cSemaphore;
+QueueHandle_t displayQueue;
+QueueHandle_t solenoidQueue;
+
+TaskHandle_t displayTaskHandle;
+TaskHandle_t solenoidTaskHandle;
+TaskHandle_t lampMatrixTaskHandle;
+
+// Task control flags
+volatile bool displayEnabled = true;
+volatile bool solenoidEnabled = true;
+
+// ========== MESSAGE STRUCTURES ==========
+struct DisplayMessage {
+    uint8_t displayNum;  // 0-4 (which display)
+    uint8_t digit;       // 0-9 to display
+};
+
+struct SolenoidMessage {
+    uint8_t number;  // Solenoid number 0-7
+    bool state;      // true=ON, false=OFF
+};
+
+// ========== 7-SEGMENT PATTERNS ==========
+// Segments: top, top-right, bottom-right, bottom, bottom-left, top-left, middle
+const bool segmentPatterns[10][7] = {
+    {1,1,1,1,1,1,0}, // 0
+    {0,1,1,0,0,0,0}, // 1
+    {1,1,0,1,1,0,1}, // 2
+    {1,1,1,1,0,0,1}, // 3
+    {0,1,1,0,0,1,1}, // 4
+    {1,0,1,1,0,1,1}, // 5
+    {1,0,1,1,1,1,1}, // 6
+    {1,1,1,0,0,0,0}, // 7
+    {1,1,1,1,1,1,1}, // 8
+    {1,1,1,1,0,1,1}  // 9
+};
+
+// ========== I2C PROTECTED FUNCTIONS ==========
+
+bool takeSemaphore(const char* caller, TickType_t timeout = portMAX_DELAY) {
+    if (xSemaphoreTake(i2cSemaphore, timeout) == pdTRUE) {
+        return true;
+    }
+    Serial.print("TIMEOUT: ");
+    Serial.print(caller);
+    Serial.println(" couldn't get I2C semaphore");
+    return false;
+}
+
+void giveSemaphore() {
+    xSemaphoreGive(i2cSemaphore);
+}
+
+// ========== PCA9546 MULTIPLEXER FUNCTIONS ==========
+
+void selectMuxChannel(uint8_t channel) {
+    // Channels 0-3 are on the mux, channel 4 is direct (disable mux)
+    if (channel == currentMuxChannel) return;  // Already selected
+    
+    if (channel < 4) {
+        // Select channel on PCA9546 (write channel bit mask)
+        Wire1.beginTransmission(PCA9546_ADDRESS);
+        Wire1.write(1 << channel);  // Enable only this channel
+        Wire1.endTransmission();
+    } else if (channel == 4) {
+        // Disable mux to access direct display
+        Wire1.beginTransmission(PCA9546_ADDRESS);
+        Wire1.write(0x00);  // Disable all channels
+        Wire1.endTransmission();
+    }
+    
+    currentMuxChannel = channel;
+    delayMicroseconds(100);  // Small delay for mux to settle
+}
+
+void writeMCP23017(uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(MCP23017_ADDRESS);
+    Wire.write(reg);
+    Wire.write(value);
+    uint8_t error = Wire.endTransmission();
+    
+    if (error != 0) {
+        Serial.print("MCP WRITE ERROR: ");
+        Serial.println(error);
+    }
+}
+
+uint8_t readMCP23017(uint8_t reg) {
+    Wire.beginTransmission(MCP23017_ADDRESS);
+    Wire.write(reg);
+    uint8_t error = Wire.endTransmission();
+    
+    if (error != 0) {
+        Serial.print("MCP READ ERROR: ");
+        Serial.println(error);
+        return 0;
+    }
+    
+    Wire.requestFrom((int)MCP23017_ADDRESS, 1);
+    return Wire.read();
+}
+
+// ========== MCP23017 FUNCTIONS ==========
+
+void initMCP23017() {
+    if (takeSemaphore("initMCP23017")) {
+        Serial.println("Initializing MCP23017...");
+        
+        // Set all pins as outputs
+        writeMCP23017(IODIRA, 0x00);
+        writeMCP23017(IODIRB, 0x00);
+        
+        // Turn all outputs off
+        writeMCP23017(GPIOA, 0x00);
+        writeMCP23017(GPIOB, 0x00);
+        
+        Serial.println("MCP23017 initialized");
+        giveSemaphore();
+    }
+}
+
+// ========== LAMP MATRIX FUNCTIONS ==========
+
+void initLampMatrix() {
+    Serial.println("Initializing Lamp Matrix...");
+    
+    // Configure all row pins (M1-M8) as outputs
+    // These drive ULN2803A which inverts signal for P-channel MOSFETs
+    for (uint8_t i = 0; i < NUM_LAMP_ROWS; i++) {
+        pinMode(rowPins[i], OUTPUT);
+        digitalWrite(rowPins[i], LOW);  // LOW = Row OFF (ULN2803A pulls gate HIGH)
+    }
+    
+    // Configure all column pins (L4-L7) as outputs
+    // These drive N-channel MOSFETs directly (no inversion)
+    for (uint8_t i = 0; i < NUM_LAMP_COLS; i++) {
+        pinMode(colPins[i], OUTPUT);
+        digitalWrite(colPins[i], LOW);  // LOW = Column OFF
+    }
+    
+    // Clear lamp matrix state
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = false;
+        }
+    }
+    
+    Serial.println("Lamp Matrix initialized - 8 rows x 4 columns (32 lamps)");
+}
+
+void setLamp(uint8_t row, uint8_t col, bool state) {
+    if (row >= NUM_LAMP_ROWS || col >= NUM_LAMP_COLS) return;
+    lampMatrix[row][col] = state;
+}
+
+void clearAllLamps() {
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = false;
+        }
+    }
+}
+
+void setLampPattern(bool pattern[NUM_LAMP_ROWS][NUM_LAMP_COLS]) {
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            lampMatrix[r][c] = pattern[r][c];
+        }
+    }
+}
+
+void testLampSequence() {
+    Serial.println("Starting lamp test sequence...");
+    
+    // Test each lamp individually
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            setLamp(r, c, true);
+            delay(100);
+            setLamp(r, c, false);
+        }
+    }
+    
+    // Test all lamps on
+    for (uint8_t r = 0; r < NUM_LAMP_ROWS; r++) {
+        for (uint8_t c = 0; c < NUM_LAMP_COLS; c++) {
+            setLamp(r, c, true);
+        }
+    }
+    delay(500);
+    clearAllLamps();
+    
+    Serial.println("Lamp test sequence complete");
+}
+
+// ========== MCP23017 SOLENOID FUNCTIONS ==========
+
+void setFireSolenoid(uint8_t number, bool state) {
+    if (number > 7) return;
+    
+    if (takeSemaphore("fireSolenoid", pdMS_TO_TICKS(100))) {
+        // All 8 solenoids on GPIOA (pins GPA0-GPA7)
+        uint8_t mask = 1 << number;
+        
+        if (state) {
+            writeMCP23017(GPIOA, mask);
+        } else {
+            writeMCP23017(GPIOA, 0x00);
+        }
+        
+        giveSemaphore();
+    }
+}
+
+void allSolenoidsOff() {
+    if (takeSemaphore("allOff", pdMS_TO_TICKS(100))) {
+        writeMCP23017(GPIOA, 0x00);
+        writeMCP23017(GPIOB, 0x00);
+        giveSemaphore();
+    }
+}
+
+// ========== DISPLAY FUNCTIONS ==========
+
+// Forward declarations
+void renderDigitToVirtual(uint8_t digit, int offsetX);
+
+// Draw horizontal segment with triangular ends (vintage 7-segment look)
+void drawHorizontalSegment(int x, int y, int w, int h) {
+    // Main rectangle body (full width)
+    display.fillRect(x, y, w, h, SSD1306_WHITE);
+    
+    // Left triangle (pointed end)
+    for (int i = 0; i < h/2; i++) {
+        display.drawLine(x - h/2 + i, y + h/2 - i, x - h/2 + i, y + h/2 + i, SSD1306_WHITE);
+    }
+    
+    // Right triangle (pointed end)
+    for (int i = 0; i < h/2; i++) {
+        display.drawLine(x + w + h/2 - i - 1, y + h/2 - i, x + w + h/2 - i - 1, y + h/2 + i, SSD1306_WHITE);
+    }
+}
+
+// Draw vertical segment with triangular ends
+void drawVerticalSegment(int x, int y, int w, int h) {
+    // Main rectangle body (full height)
+    display.fillRect(x, y, w, h, SSD1306_WHITE);
+    
+    // Top triangle (pointed end)
+    for (int i = 0; i < w/2; i++) {
+        display.drawLine(x + w/2 - i, y - w/2 + i, x + w/2 + i, y - w/2 + i, SSD1306_WHITE);
+    }
+    
+    // Bottom triangle (pointed end)
+    for (int i = 0; i < w/2; i++) {
+        display.drawLine(x + w/2 - i, y + h + w/2 - i - 1, x + w/2 + i, y + h + w/2 - i - 1, SSD1306_WHITE);
+    }
+}
+
+void renderDigit(uint8_t digit, int offsetX) {
+    if (digit > 9) return;
+    
+    const bool* pattern = segmentPatterns[digit];
+    
+    // Segment dimensions - adjusted to fit 64px height
+    int segW = 38;  // Horizontal segment width
+    int segH = 5;   // Segment thickness
+    int segV = 24;  // Vertical segment height
+    
+    int x = offsetX + 5;
+    int y = 2;  // Start a bit higher
+    
+    // Top (segment 0) - horizontal
+    if (pattern[0]) drawHorizontalSegment(x + 4, y, segW - 8, segH);
+    
+    // Top-right (segment 1) - vertical
+    if (pattern[1]) drawVerticalSegment(x + segW - 4, y + 4, segH, segV);
+    
+    // Bottom-right (segment 2) - vertical
+    if (pattern[2]) drawVerticalSegment(x + segW - 4, y + segV + 8, segH, segV);
+    
+    // Bottom (segment 3) - horizontal
+    if (pattern[3]) drawHorizontalSegment(x + 4, y + 2*segV + 8, segW - 8, segH);
+    
+    // Bottom-left (segment 4) - vertical
+    if (pattern[4]) drawVerticalSegment(x, y + segV + 8, segH, segV);
+    
+    // Top-left (segment 5) - vertical
+    if (pattern[5]) drawVerticalSegment(x, y + 4, segH, segV);
+    
+    // Middle (segment 6) - horizontal
+    if (pattern[6]) drawHorizontalSegment(x + 4, y + segV + 4, segW - 8, segH);
+}
+
+void updateDisplay(uint8_t displayNum, uint8_t digit) {
+    if (takeSemaphore("display", pdMS_TO_TICKS(1000))) {
+        // Select the correct display
+        selectMuxChannel(displayNum);
+        
+        display.clearDisplay();
+        renderDigit(digit, 40);  // Centered on 128px screen
+        display.display();
+        giveSemaphore();
+    }
+}
+
+// Render 6-digit score to virtual buffer, then blit to 5 physical displays
+void updateVirtualDisplay(uint32_t score) {
+    if (takeSemaphore("display", pdMS_TO_TICKS(1000))) {
+        // Clear virtual canvas
+        virtualDisplay.fillScreen(0);
+        
+        // Extract 6 digits from score
+        uint8_t digits[6];
+        digits[0] = (score / 100000) % 10;  // Hundred thousands
+        digits[1] = (score / 10000) % 10;   // Ten thousands
+        digits[2] = (score / 1000) % 10;    // Thousands
+        digits[3] = (score / 100) % 10;     // Hundreds
+        digits[4] = (score / 10) % 10;      // Tens
+        digits[5] = score % 10;              // Ones
+        
+        // Render each digit to virtual buffer
+        // 6 digits across 640px total width
+        // Each digit ~48px wide (38px character + 10px gap)
+        // Total needed: 6 * 48 = 288px
+        // Center on 640px: (640 - 288) / 2 = 176 start position
+        // Actually, let's use 640 / 6 = ~106px per digit for even spacing
+        // Character is 48px wide, so spacing of 106px gives nice gaps
+        for (uint8_t i = 0; i < 6; i++) {
+            renderDigitToVirtual(digits[i], 5 + (i * 106));
+        }
+        
+        // Now blit sections of virtual buffer to physical displays
+        // Display order: 3=leftmost, 2, 1, 0, 4=rightmost
+        // Display 3 (mux ch 3): pixels 0-127
+        // Display 2 (mux ch 2): pixels 128-255
+        // Display 1 (mux ch 1): pixels 256-383
+        // Display 0 (mux ch 0): pixels 384-511
+        // Display 4 (direct):    pixels 512-639
+        
+        uint8_t displayOrder[5] = {3, 2, 1, 0, 4};
+        
+        for (uint8_t i = 0; i < NUM_DISPLAYS; i++) {
+            uint8_t dispNum = displayOrder[i];
+            selectMuxChannel(dispNum);
+            
+            display.clearDisplay();
+            
+            // Copy 128px section from virtual buffer to physical display
+            int srcX = i * SCREEN_WIDTH;
+            for (int y = 0; y < SCREEN_HEIGHT; y++) {
+                for (int x = 0; x < SCREEN_WIDTH; x++) {
+                    if (virtualDisplay.getPixel(srcX + x, y)) {
+                        display.drawPixel(x, y, SSD1306_WHITE);
+                    }
+                }
+            }
+            
+            display.display();
+        }
+        
+        giveSemaphore();
+    }
+}
+
+// Helper function to render digit to virtual canvas at given X position
+void renderDigitToVirtual(uint8_t digit, int offsetX) {
+    if (digit > 9) return;
+    
+    const bool* pattern = segmentPatterns[digit];
+    
+    // Same segment dimensions as before
+    int segW = 38;
+    int segH = 5;
+    int segV = 24;
+    
+    int x = offsetX + 5;
+    int y = 2;
+    
+    // Render each segment using fillRect and line drawing on virtualDisplay
+    // Top segment
+    if (pattern[0]) {
+        virtualDisplay.fillRect(x + 4, y, segW - 8, segH, 1);
+        // Left triangle
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + 4 - segH/2 + i, y + segH/2 - i, 
+                                   x + 4 - segH/2 + i, y + segH/2 + i, 1);
+        }
+        // Right triangle  
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i - 1, y + segH/2 - i,
+                                   x + segW - 4 + segH/2 - i - 1, y + segH/2 + i, 1);
+        }
+    }
+    
+    // Top-right vertical
+    if (pattern[1]) {
+        virtualDisplay.fillRect(x + segW - 4, y + 4, segH, segV, 1);
+        // Top triangle
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i, y + 4 - segH/2 + i,
+                                   x + segW - 4 + segH/2 + i, y + 4 - segH/2 + i, 1);
+        }
+        // Bottom triangle
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i, y + 4 + segV + segH/2 - i - 1,
+                                   x + segW - 4 + segH/2 + i, y + 4 + segV + segH/2 - i - 1, 1);
+        }
+    }
+    
+    // Bottom-right vertical
+    if (pattern[2]) {
+        virtualDisplay.fillRect(x + segW - 4, y + segV + 8, segH, segV, 1);
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i, y + segV + 8 - segH/2 + i,
+                                   x + segW - 4 + segH/2 + i, y + segV + 8 - segH/2 + i, 1);
+        }
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i, y + 2*segV + 8 + segH/2 - i - 1,
+                                   x + segW - 4 + segH/2 + i, y + 2*segV + 8 + segH/2 - i - 1, 1);
+        }
+    }
+    
+    // Bottom segment
+    if (pattern[3]) {
+        virtualDisplay.fillRect(x + 4, y + 2*segV + 8, segW - 8, segH, 1);
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + 4 - segH/2 + i, y + 2*segV + 8 + segH/2 - i,
+                                   x + 4 - segH/2 + i, y + 2*segV + 8 + segH/2 + i, 1);
+        }
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i - 1, y + 2*segV + 8 + segH/2 - i,
+                                   x + segW - 4 + segH/2 - i - 1, y + 2*segV + 8 + segH/2 + i, 1);
+        }
+    }
+    
+    // Bottom-left vertical
+    if (pattern[4]) {
+        virtualDisplay.fillRect(x, y + segV + 8, segH, segV, 1);
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segH/2 - i, y + segV + 8 - segH/2 + i,
+                                   x + segH/2 + i, y + segV + 8 - segH/2 + i, 1);
+        }
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segH/2 - i, y + 2*segV + 8 + segH/2 - i - 1,
+                                   x + segH/2 + i, y + 2*segV + 8 + segH/2 - i - 1, 1);
+        }
+    }
+    
+    // Top-left vertical
+    if (pattern[5]) {
+        virtualDisplay.fillRect(x, y + 4, segH, segV, 1);
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segH/2 - i, y + 4 - segH/2 + i,
+                                   x + segH/2 + i, y + 4 - segH/2 + i, 1);
+        }
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segH/2 - i, y + segV + 4 + segH/2 - i - 1,
+                                   x + segH/2 + i, y + segV + 4 + segH/2 - i - 1, 1);
+        }
+    }
+    
+    // Middle segment
+    if (pattern[6]) {
+        virtualDisplay.fillRect(x + 4, y + segV + 4, segW - 8, segH, 1);
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + 4 - segH/2 + i, y + segV + 4 + segH/2 - i,
+                                   x + 4 - segH/2 + i, y + segV + 4 + segH/2 + i, 1);
+        }
+        for (int i = 0; i < segH/2; i++) {
+            virtualDisplay.drawLine(x + segW - 4 + segH/2 - i - 1, y + segV + 4 + segH/2 - i,
+                                   x + segW - 4 + segH/2 - i - 1, y + segV + 4 + segH/2 + i, 1);
+        }
+    }
+}
+
+void updateDisplayDouble(uint8_t displayNum, uint8_t leftDigit, uint8_t rightDigit) {
+    if (takeSemaphore("display", pdMS_TO_TICKS(1000))) {
+        // Select the correct display
+        selectMuxChannel(displayNum);
+        
+        display.clearDisplay();
+        renderDigit(leftDigit, 10);   // Left digit at x=10
+        renderDigit(rightDigit, 70);  // Right digit at x=70
+        display.display();
+        giveSemaphore();
+    }
+}
+
+void initDisplay() {
+    if (takeSemaphore("initDisplay")) {
+        Serial.println("Initializing Displays...");
+        
+        // Initialize all 5 displays
+        for (uint8_t i = 0; i < NUM_DISPLAYS; i++) {
+            selectMuxChannel(i);
+            
+            if (!display.begin(SSD1306_SWITCHCAPVCC, SSD1306_ADDRESS)) {
+                Serial.print("ERROR: Display ");
+                Serial.print(i);
+                Serial.println(" init failed!");
+                continue;
+            }
+            
+            Serial.print("Display ");
+            Serial.print(i);
+            Serial.println(" initialized");
+            
+            display.clearDisplay();
+            display.setTextSize(2);
+            display.setTextColor(SSD1306_WHITE);
+            display.setCursor(10, 10);
+            display.println("Captain");
+            display.println("Fantastic");
+            display.setCursor(40, 50);
+            display.print("#");
+            display.print(i);
+            display.display();
+        }
+        
+        Serial.println("All displays initialized");
+        giveSemaphore();
+    }
+}
+
+// ========== I2C SCAN ==========
+
+void scanI2C() {
+    if (takeSemaphore("i2cScan")) {
+        // Scan Bus 0 (MCP23017)
+        Serial.println("\n=== I2C Bus 0 Scan (MCP23017) ===");
+        uint8_t deviceCount = 0;
+        
+        for (uint8_t address = 1; address < 127; address++) {
+            Wire.beginTransmission(address);
+            uint8_t error = Wire.endTransmission();
+            
+            if (error == 0) {
+                Serial.print("Found device at 0x");
+                if (address < 16) Serial.print("0");
+                Serial.print(address, HEX);
+                
+                if (address == MCP23017_ADDRESS) {
+                    Serial.println(" (MCP23017 - Solenoids)");
+                } else {
+                    Serial.println();
+                }
+                deviceCount++;
+            }
+        }
+        Serial.print("Total devices: ");
+        Serial.println(deviceCount);
+        
+        // Scan Bus 1 (Displays & Mux)
+        Serial.println("\n=== I2C Bus 1 Scan (Displays) ===");
+        deviceCount = 0;
+        
+        for (uint8_t address = 1; address < 127; address++) {
+            Wire1.beginTransmission(address);
+            uint8_t error = Wire1.endTransmission();
+            
+            if (error == 0) {
+                Serial.print("Found device at 0x");
+                if (address < 16) Serial.print("0");
+                Serial.print(address, HEX);
+                
+                if (address == PCA9546_ADDRESS) {
+                    Serial.println(" (PCA9546 - Multiplexer)");
+                } else if (address == SSD1306_ADDRESS) {
+                    Serial.println(" (SSD1306 - Display)");
+                } else {
+                    Serial.println();
+                }
+                deviceCount++;
+            }
+        }
+        Serial.print("Total devices: ");
+        Serial.println(deviceCount);
+        Serial.println("====================\n");
+        giveSemaphore();
+    }
+}
+
+// ========== FREERTOS TASKS ==========
+
+void displayTask(void* parameter) {
+    uint32_t currentScore = 123456;  // Demo 6-digit score
+    DisplayMessage msg;
+    
+    Serial.println("[Display Task] Started on core " + String(xPortGetCoreID()));
+    
+    while (true) {
+        if (displayEnabled) {
+            // Check for messages from queue
+            if (xQueueReceive(displayQueue, &msg, 0) == pdTRUE) {
+                // Update specific display with specific digit
+                updateDisplay(msg.displayNum, msg.digit);
+                Serial.print("[Display Task] Display ");
+                Serial.print(msg.displayNum);
+                Serial.print(" showing: ");
+                Serial.println(msg.digit);
+            } else {
+                // Auto-demo: show 6-digit score using virtual buffer
+                updateVirtualDisplay(currentScore);
+                
+                Serial.print("[Display Task] Score: ");
+                Serial.println(currentScore);
+                
+                // Auto-increment score for demo
+                currentScore += 1111;
+                if (currentScore > 999999) currentScore = 0;
+            }
+        }
+        
+        // Run every 2 seconds for multi-display demo
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
+
+void solenoidTask(void* parameter) {
+    uint8_t currentSolenoid = 0;
+    bool state = false;
+    SolenoidMessage msg;
+    
+    Serial.println("[Solenoid Task] Started on core " + String(xPortGetCoreID()));
+    
+    while (true) {
+        if (solenoidEnabled) {
+            // Check for messages from queue
+            if (xQueueReceive(solenoidQueue, &msg, 0) == pdTRUE) {
+                setFireSolenoid(msg.number, msg.state);
+                Serial.print("[Solenoid Task] Manual: ");
+                Serial.print(msg.number);
+                Serial.println(msg.state ? " ON" : " OFF");
+            } else {
+                // Auto-cycle for demo
+                if (state) {
+                    // Turn off
+                    allSolenoidsOff();
+                    currentSolenoid++;
+                    if (currentSolenoid > 7) currentSolenoid = 0;
+                } else {
+                    // Turn on
+                    setFireSolenoid(currentSolenoid, true);
+                    Serial.print("[Solenoid Task] Auto: ");
+                    Serial.print(currentSolenoid);
+                    Serial.println(" ON");
+                }
+                state = !state;
+            }
+        }
+        
+        // Run every 500ms
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+// ========== LAMP MATRIX TASK ==========
+
+void lampMatrixTask(void* parameter) {
+    Serial.println("[Lamp Matrix Task] Started on core " + String(xPortGetCoreID()));
+    
+    const TickType_t rowDelay = pdMS_TO_TICKS(1);  // ~625µs per row (200Hz refresh)
+    uint8_t currentRow = 0;
+    
+    while (true) {
+        if (lampMatrixEnabled) {
+            // Disable all rows first (LOW = OFF due to ULN2803A inversion)
+            for (uint8_t i = 0; i < NUM_LAMP_ROWS; i++) {
+                digitalWrite(rowPins[i], LOW);
+            }
+            
+            // Set column pattern for current row
+            for (uint8_t col = 0; col < NUM_LAMP_COLS; col++) {
+                digitalWrite(colPins[col], lampMatrix[currentRow][col] ? HIGH : LOW);
+            }
+            
+            // Enable current row (HIGH via ULN2803A inverts to LOW at P-channel gate = ON)
+            digitalWrite(rowPins[currentRow], HIGH);
+            
+            // Wait for row time (~625µs)
+            vTaskDelay(rowDelay);
+            
+            // Move to next row
+            currentRow++;
+            if (currentRow >= NUM_LAMP_ROWS) {
+                currentRow = 0;
+            }
+        } else {
+            // Matrix disabled - turn off all rows and columns
+            for (uint8_t i = 0; i < NUM_LAMP_ROWS; i++) {
+                digitalWrite(rowPins[i], LOW);
+            }
+            for (uint8_t i = 0; i < NUM_LAMP_COLS; i++) {
+                digitalWrite(colPins[i], LOW);
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));  // Slow poll when disabled
+        }
+    }
+}
+
+// ========== SERIAL COMMAND TASK ==========
+
+void serialTask(void* parameter) {
+    Serial.println("[Serial Task] Started on core " + String(xPortGetCoreID()));
+    
+    while (true) {
+        if (Serial.available()) {
+            char cmd = Serial.read();
+            
+            switch (cmd) {
+                case 's':
+                    solenoidEnabled = !solenoidEnabled;
+                    Serial.print("Solenoids: ");
+                    Serial.println(solenoidEnabled ? "ENABLED" : "DISABLED");
+                    if (!solenoidEnabled) {
+                        allSolenoidsOff();
+                    }
+                    break;
+                    
+                case 'd':
+                    displayEnabled = !displayEnabled;
+                    Serial.print("Display: ");
+                    Serial.println(displayEnabled ? "ENABLED" : "DISABLED");
+                    break;
+                
+                case 'l':
+                    lampMatrixEnabled = !lampMatrixEnabled;
+                    Serial.print("Lamp Matrix: ");
+                    Serial.println(lampMatrixEnabled ? "ENABLED" : "DISABLED");
+                    if (!lampMatrixEnabled) {
+                        clearAllLamps();
+                    }
+                    break;
+                    
+                case 't':
+                    testLampSequence();
+                    break;
+                    
+                case '0' ... '7': {
+                    uint8_t num = cmd - '0';
+                    SolenoidMessage msg = {num, true};
+                    xQueueSend(solenoidQueue, &msg, 0);
+                    Serial.print("Manual fire: ");
+                    Serial.println(num);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    msg.state = false;
+                    xQueueSend(solenoidQueue, &msg, 0);
+                    break;
+                }
+                    
+                case 'x':
+                    Serial.println("All solenoids OFF");
+                    allSolenoidsOff();
+                    break;
+                    
+                case 'i':
+                    scanI2C();
+                    break;
+                    
+                case '?':
+                    Serial.println("\n=== Commands ===");
+                    Serial.println("s - Toggle solenoids");
+                    Serial.println("d - Toggle display");
+                    Serial.println("l - Toggle lamp matrix");
+                    Serial.println("t - Test lamp sequence");
+                    Serial.println("0-7 - Fire solenoid");
+                    Serial.println("x - All solenoids OFF");
+                    Serial.println("i - Scan I2C bus");
+                    Serial.println("? - Help");
+                    break;
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// ========== SETUP ==========
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    
+    Serial.println("\n\n========================================");
+    Serial.println("   Captain Fantastic - FreeRTOS Version");
+    Serial.println("========================================\n");
+    
+    // Initialize I2C Bus 0 (MCP23017)
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Wire.setClock(I2C_FREQ);
+    Serial.println("I2C Bus 0 initialized at 100kHz (MCP23017)");
+    
+    // Initialize I2C Bus 1 (Display)
+    Wire1.begin(I2C1_SDA, I2C1_SCL);
+    Wire1.setClock(I2C_FREQ);
+    Serial.println("I2C Bus 1 initialized at 100kHz (Display)");
+    
+    // Create I2C semaphore (mutex)
+    i2cSemaphore = xSemaphoreCreateMutex();
+    if (i2cSemaphore == NULL) {
+        Serial.println("ERROR: Failed to create I2C semaphore!");
+        while(1);
+    }
+    Serial.println("I2C semaphore created");
+    
+    // Create message queues
+    displayQueue = xQueueCreate(10, sizeof(DisplayMessage));
+    solenoidQueue = xQueueCreate(10, sizeof(SolenoidMessage));
+    
+    if (displayQueue == NULL || solenoidQueue == NULL) {
+        Serial.println("ERROR: Failed to create queues!");
+        while(1);
+    }
+    Serial.println("Message queues created");
+    
+    // Scan I2C bus
+    scanI2C();
+    
+    // Initialize hardware
+    initMCP23017();
+    initLampMatrix();
+    initDisplay();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    
+    Serial.println("\n========================================");
+    Serial.println("Creating FreeRTOS Tasks...");
+    Serial.println("========================================\n");
+    
+    // Create Display Task (Core 0, Priority 1)
+    xTaskCreatePinnedToCore(
+        displayTask,           // Function
+        "DisplayTask",         // Name
+        4096,                  // Stack size
+        NULL,                  // Parameters
+        1,                     // Priority (lower)
+        &displayTaskHandle,    // Handle
+        0                      // Core 0
+    );
+    
+    // Create Solenoid Task (Core 1, Priority 2)
+    xTaskCreatePinnedToCore(
+        solenoidTask,
+        "SolenoidTask",
+        4096,
+        NULL,
+        2,                     // Priority
+        &solenoidTaskHandle,
+        1                      // Core 1
+    );
+    
+    // Create Lamp Matrix Task (Core 1, Priority 3 - highest for consistent refresh)
+    xTaskCreatePinnedToCore(
+        lampMatrixTask,
+        "LampMatrixTask",
+        2048,                  // Smaller stack - simple multiplexing
+        NULL,
+        3,                     // Priority (highest for consistent timing)
+        &lampMatrixTaskHandle,
+        1                      // Core 1
+    );
+    
+    // Create Serial Command Task (Core 0, Priority 1)
+    xTaskCreatePinnedToCore(
+        serialTask,
+        "SerialTask",
+        4096,
+        NULL,
+        1,
+        NULL,
+        0                      // Core 0
+    );
+    
+    Serial.println("All tasks created!");
+    Serial.println("\n=== System Ready ===");
+    Serial.println("5 Displays showing score (every 2 sec)");
+    Serial.println("Solenoids pulsing 0-7 (every 500ms)");
+    Serial.println("Lamp Matrix scanning at 200Hz (8x4)");
+    Serial.println("\nCommands: s d l t 0-7 x i ?");
+    Serial.println("====================\n");
+}
+
+void loop() {
+    // Empty - everything runs in tasks
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}

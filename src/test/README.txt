@@ -1,0 +1,1 @@
+This folder contains test and experimental .cpp files. Only working production code should remain in src/.

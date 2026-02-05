@@ -1,0 +1,1 @@
+This folder contains old, unused, or backup .cpp files for reference only. Move files here to keep src/ clean.

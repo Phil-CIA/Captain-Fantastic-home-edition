@@ -1,0 +1,1 @@
+src/ contains only the main working .cpp and library files. All test, backup, legacy, and display/audio/diagnostic code is in subfolders.

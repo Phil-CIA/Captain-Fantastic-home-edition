@@ -1,0 +1,12 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "Capt Fan esp32 lib")(type "KiCad")(uri "${KIPRJMOD}/Capt Fan esp32 lib.kicad_sym")(options "")(descr ""))
+  (lib (name "2025-10-27_16-41-46")(type "KiCad")(uri "C:/Users/user/Downloads/LDS_C814RI/KiCADv6/2025-10-27_16-41-46.kicad_sym")(options "")(descr ""))
+  (lib (name "MCP23017-E_SP")(type "KiCad")(uri "C:/Users/user/Downloads/LIB_MCP23017-E_SP/MCP23017-E_SP/KiCad/MCP23017-E_SP.kicad_sym")(options "")(descr ""))
+  (lib (name "IRLZ44NPBF")(type "KiCad")(uri "C:/Users/user/Downloads/LIB_IRLZ44NPBF/IRLZ44NPBF/KiCad/IRLZ44NPBF.kicad_sym")(options "")(descr ""))
+  (lib (name "New_Library")(type "KiCad")(uri "${KIPRJMOD}/New_Library.kicad_sym")(options "")(descr ""))
+  (lib (name "2025-10-31_18-11-11")(type "KiCad")(uri "C:/Users/user/Downloads/exports/KiCADv6/2025-10-31_18-11-11.kicad_sym")(options "")(descr ""))
+  (lib (name "hat board connector")(type "KiCad")(uri "C:/Users/user/Downloads/76342_310LF (2)/76342-310LF.kicad_sym")(options "")(descr ""))
+  (lib (name "Break away conn 30 pin")(type "KiCad")(uri "C:/Users/user/Downloads/76342_310LF (2)/76342-310LF.kicad_sym")(options "")(descr ""))
+  (lib (name "Connector hat board 30 pin female")(type "KiCad")(uri "C:/Users/user/Downloads/77313_124_30LF/77313-124-30LF.kicad_sym")(options "")(descr ""))
+)

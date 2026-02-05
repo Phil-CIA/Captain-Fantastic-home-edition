@@ -1,0 +1,1 @@
+This folder contains audio-related code. Only keep main application code in src/.

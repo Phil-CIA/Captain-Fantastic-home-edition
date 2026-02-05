@@ -1,0 +1,6 @@
+{
+    "configuration": "esp32",
+    "board": "esp32:esp32:esp32",
+    "port": "COM3",
+    "sketch": "Main.cpp"
+}

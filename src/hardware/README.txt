@@ -1,0 +1,1 @@
+This folder contains hardware abstraction or hardware-specific code.
