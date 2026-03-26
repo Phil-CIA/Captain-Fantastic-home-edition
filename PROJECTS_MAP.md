@@ -46,13 +46,12 @@ Purpose:
 - Historical backups, temporary work, and restore snapshots.
 
 Primary locations:
-- backups/
-- Battery charger/
-- New folder/
-- RTOS main_firmware restore/
+- archive/backups/
+- archive/battery-charger/
+- archive/rtos-main-firmware-restore/
 
 Keep on main branch:
-- Prefer archive branch or archive/ folder after review.
+- Yes, now grouped under archive/.
 
 ## Cleanup Rules
 1. Use one PR per project area.
