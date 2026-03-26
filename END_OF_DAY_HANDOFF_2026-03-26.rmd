@@ -1,0 +1,49 @@
+# End Of Day Handoff - 2026-03-26
+
+## What Was Completed
+1. Captain-Fantastic-home-edition was cleaned up and pushed to GitHub.
+2. WorkStation was initialized as a git repo, linked to its existing GitHub repository, merged safely with remote history, and pushed.
+3. Captain repository cleanup was broken into safe file-move PRs.
+4. Project boundaries are now documented.
+
+## GitHub Repositories
+1. Captain repo
+   - https://github.com/Phil-CIA/Captain-Fantastic-home-edition
+2. WorkStation repo
+   - https://github.com/Phil-CIA/Development-Station-Power-Supply
+
+## Captain Repo Cleanup Completed
+1. Project map added and merged
+2. Archive folders normalized under archive/ and merged
+3. Hardware files normalized under hardware/ and merged
+
+## Current Captain Repo State
+1. Branch checked out locally right now: cleanup/repo-index
+2. main already contains the archive and hardware normalization merges
+3. Working tree is clean
+4. Latest main seen locally: b4f4afe
+
+## Current WorkStation Repo State
+1. Branch: main
+2. Working tree is clean
+3. HEAD: db0fd76
+4. Remote main is updated
+
+## Important Notes
+1. Only local-only build/cache artifacts remain outside GitHub, by design:
+   - .pio/
+   - machine-specific .vscode files
+   - LTspice generated outputs
+2. No firmware logic changes were mixed into the repo-organization PRs.
+3. The next cleanup step should be documentation/indexing only, unless the user wants to resume firmware work instead.
+
+## Recommended First Step Next Chat
+1. Finish and push the final indexing branch with:
+   - REPO_INDEX.md
+   - this handoff file
+   - optional README navigation updates
+2. Then open a PR for cleanup/repo-index
+
+## Suggested Next Chat Prompt
+Continue from END_OF_DAY_HANDOFF_2026-03-26.rmd.
+Finish the final documentation/indexing pass in Captain-Fantastic-home-edition, push the cleanup/repo-index branch, and give me the PR link. Do not change firmware code unless you find accidental documentation-only issues.
