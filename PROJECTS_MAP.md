@@ -33,13 +33,14 @@ Purpose:
 
 Primary locations:
 - hardware/
-- Gerber files/
-- ESP32Vroom-backups/
-- Captain fantastic footprints.pretty/
-- *.kicad_* and gerber/drill exports in root (as applicable)
+- hardware/kicad/esp32vroom/
+- hardware/kicad/libs/
+- hardware/gerbers/root-export-esp32vroom/
+- hardware/gerbers/legacy-gerber-files/
+- hardware/backups/esp32vroom-backups/
 
 Keep on main branch:
-- Yes, but grouped under a consistent hardware layout in follow-up PRs.
+- Yes, grouped under hardware/ with stable subfolders.
 
 ## Project D: Archives, Experiments, and Recovery Copies
 Purpose:
