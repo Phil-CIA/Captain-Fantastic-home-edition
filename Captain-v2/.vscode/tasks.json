@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Captain-v2: Build (captain_control)",
+      "type": "shell",
+      "command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_control"
+      ],
+      "group": "build"
+    },
+    {
+      "label": "Captain-v2: Upload (captain_control)",
+      "type": "shell",
+      "command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_control",
+        "-t",
+        "upload"
+      ],
+      "group": "build"
+    },
+    {
+      "label": "Captain-v2: Upload OTA (captain_control_ota)",
+      "type": "shell",
+      "command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_control_ota",
+        "-t",
+        "upload"
+      ],
+      "group": "build"
+    }
+  ]
+}

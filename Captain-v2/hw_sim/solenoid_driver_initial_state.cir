@@ -1,0 +1,43 @@
+* Solenoid driver initial-state check based on posted schematic segment
+* Nodes:
+* ctrl = Q2 drain / Q8 gate / Q9 gate / R20 bottom
+* drv  = Q8 drain / Q9 drain / R25 left
+* gq17 = Q17 gate
+* out  = SD6 node (Q17 source / R30 top)
+
+.param VIN=0
+V22 v22 0 22
+VS6 s6 0 {VIN}
+
+R15 s6 0 10k
+R20 v22 ctrl 10k
+
+* Q2 BSS138 style pull-down from ctrl to ground when S6 high
+M2 ctrl s6 0 0 NMOS_SIG
+
+* Complementary level-shift pair
+M8 drv ctrl v22 v22 PMOS_SIG
+M9 drv ctrl 0 0 NMOS_SIG
+
+R25 drv gq17 56
+
+* Q17 represented as N-MOS pass element (as drawn in screenshot)
+M17 v22 gq17 out out NMOS_PWR
+R30 out 0 10k
+
+* Approximate solenoid/load seen from SD6 node
+RLOAD out 0 20
+
+.model NMOS_SIG NMOS (VTO=1.5 KP=0.02 RD=0.5 RS=0.5 CGS=20p CGD=10p)
+.model PMOS_SIG PMOS (VTO=-1.5 KP=0.01 RD=1 RS=1 CGS=20p CGD=10p)
+.model NMOS_PWR NMOS (VTO=3.0 KP=2.0 RD=0.03 RS=0.03)
+
+.step param VIN list 0 3.3
+.op
+
+.meas op VCTRL FIND V(ctrl)
+.meas op VDRV FIND V(drv)
+.meas op VGATE_Q17 FIND V(gq17)
+.meas op VOUT FIND V(out)
+.meas op ILOAD FIND I(RLOAD)
+.end

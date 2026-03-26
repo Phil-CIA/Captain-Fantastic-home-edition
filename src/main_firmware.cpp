@@ -93,8 +93,9 @@ uint8_t switchDebounceCounter[NUM_SWITCH_ROWS][NUM_SWITCH_COLS] = {0};  // Debou
 // Global score (for display - points to current player's score)
 volatile uint32_t currentScore = 0;
 
-// Diagnostic test mode
+// Diagnostic test mode - DISABLED (use 'D' serial command to enable)
 bool diagnosticMode = false;
+bool diagnosticEnabled = false;  // Master enable flag
 uint8_t diagnosticStep = 0;
 
 // Switch mapping mode - for identifying physical switch locations
@@ -324,7 +325,8 @@ QueueHandle_t soundQueue = NULL;
 
 // Audio volume (0-255) - Gets divided by 2 in playTone() for amplitude
 // With LM384 gain of 50x, audioVolume=6 gives ~4V speaker output (safe for 8Ω)
-uint8_t audioVolume = 6;
+// Sound effect volume (0-255 for DAC)
+uint8_t audioVolume = 200;  // High volume (DAC will swing 28-228)
 
 // ========== MP3 MUSIC SYSTEM ==========
 // Music track IDs
@@ -451,8 +453,9 @@ void ioServiceTask(void* parameter) {
                                 }
                             }
                             
-                            // Check for Test button (MX6 SW1 = row 5, col 1)
-                            if (row == 5 && col == 1 && closed) {
+                            // Check for Test button (MX6 SW1 = row 5, col 1) - DISABLED
+                            // Use serial command 'D' to enable diagnostic mode
+                            if (row == 5 && col == 1 && closed && diagnosticEnabled) {
                                 Serial.println("\n[SWITCH] === TEST BUTTON PRESSED ===");
                                 diagnosticMode = !diagnosticMode;
                                 if (diagnosticMode) {
@@ -990,10 +993,17 @@ void gameLogicTask(void* parameter) {
                                 Serial.println("[DIAG] Solenoid E: Right Thumper-Bumper");
                                 solenoidState[4] = true;
                                 break;
+                            case 5:
+                                // Cycle complete - advance to next test
+                                Serial.println("[DIAG] Solenoid test complete");
+                                diagnosticStep = 4;  // Advance to switch test
+                                diagnosticCounter = 0;
+                                stepCounter = 0;
+                                break;
                         }
                         
                         diagnosticCounter++;
-                        if (diagnosticCounter > 4) {
+                        if (diagnosticCounter > 5) {
                             diagnosticCounter = 0;
                         }
                     }
@@ -1152,6 +1162,9 @@ void gameLogicTask(void* parameter) {
 // frequency: Hz (20-20000)
 // duration: milliseconds
 void playTone(uint16_t frequency, uint16_t duration_ms) {
+    Serial.printf("[DAC] Playing %dHz for %dms (vol=%d, amp=%d)\n", 
+                  frequency, duration_ms, audioVolume, audioVolume/2);
+    
     if (frequency == 0 || audioVolume == 0) {
         // Silence
         dac_output_voltage(DAC_CHANNEL_1, 128);  // Center position
@@ -1168,6 +1181,8 @@ void playTone(uint16_t frequency, uint16_t duration_ms) {
     uint8_t amplitude = audioVolume / 2;
     uint8_t high_val = 128 + amplitude;
     uint8_t low_val = 128 - amplitude;
+    
+    Serial.printf("[DAC] GPIO25 output: LOW=%d, HIGH=%d\n", low_val, high_val);
     
     // Generate square wave
     for (uint32_t i = 0; i < cycles; i++) {
@@ -1998,6 +2013,7 @@ void setup() {
     }
     
     // Create matrix scanning task on Core 1
+    // Create matrix scanning task on Core 1
     BaseType_t matrixTaskCreated = xTaskCreatePinnedToCore(
         matrixTask,           // Task function
         "MatrixTask",         // Task name
@@ -2106,14 +2122,16 @@ void loop() {
                 }
                 break;
                 
-            case 'D':  // Enter diagnostic mode
+            case 'D':  // Enable/enter diagnostic mode
             case 'd':
+                diagnosticEnabled = true;  // Enable diagnostic system
                 if (!diagnosticMode) {
                     diagnosticMode = true;
                     diagnosticStep = 0;
                     Serial.println("\n===== ENTERING DIAGNOSTIC MODE =====");
                     Serial.println("Bally Series II Test Procedure");
                     Serial.println("Send 'X' to exit diagnostic mode");
+                    Serial.println("NOTE: Test button on playfield now active");
                 } else {
                     Serial.println("Already in diagnostic mode");
                 }
@@ -2133,6 +2151,18 @@ void loop() {
                 }
                 break;
                 
+            case 'T':  // Test sound
+            case 't':
+                Serial.println("\n===== TESTING SOUND =====");
+                Serial.println("Playing test tone sequence...");
+                soundStartup();
+                delay(200);
+                soundBumperHit();
+                delay(200);
+                soundTargetHit();
+                Serial.println("Sound test complete");
+                break;
+                
             case '?':  // Help menu
             case 'h':
             case 'H':
@@ -2140,6 +2170,7 @@ void loop() {
                 Serial.println("M - Toggle Switch Mapping Mode");
                 Serial.println("D - Enter Diagnostic Test Mode");
                 Serial.println("X - Exit Diagnostic Test Mode");
+                Serial.println("T - Test Sound");
                 Serial.println("F - Flash pending firmware from external flash");
                 Serial.println("? - Show this menu");
                 Serial.println("========================");

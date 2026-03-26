@@ -2,7 +2,8 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"label": "PlatformIO Build",
+			"label": "Captain: Build (combined_rtos)",
+			"detail": "Captain-Fantastic project build",
 			"type": "shell",
 			"command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
 			"args": [
@@ -16,42 +17,8 @@
 			"group": "build"
 		},
 		{
-			"label": "PlatformIO Upload",
-			"type": "shell",
-			"command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
-			"args": [
-				"run",
-				"-e",
-				"combined_rtos",
-				"-t",
-				"upload"
-			],
-			"group": "build"
-		},
-		{
-			"label": "PlatformIO Build",
-			"type": "shell",
-			"command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
-			"args": [
-				"run",
-				"-e",
-				"combined_rtos"
-			],
-			"group": "build"
-		},
-		{
-			"label": "PlatformIO Build",
-			"type": "shell",
-			"command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
-			"args": [
-				"run",
-				"-e",
-				"combined_rtos"
-			],
-			"group": "build"
-		},
-		{
-			"label": "PlatformIO Upload",
+			"label": "Captain: Upload (combined_rtos)",
+			"detail": "Captain-Fantastic project upload",
 			"type": "shell",
 			"command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
 			"args": [
