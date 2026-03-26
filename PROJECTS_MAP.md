@@ -66,3 +66,14 @@ Keep on main branch:
 2. Normalize archive placement.
 3. Normalize hardware folder structure.
 4. Final README/index updates.
+
+## External Project Mapping
+1. WorkStation project has been migrated to its own repository:
+	- https://github.com/Phil-CIA/Development-Station-Power-Supply
+2. Captain project remains in this repository:
+	- https://github.com/Phil-CIA/Captain-Fantastic-home-edition
+
+## Local-Only Files (Not Intended for GitHub)
+1. PlatformIO build output folders (`.pio/`)
+2. VS Code machine-specific C/C++ cache files (`.vscode/c_cpp_properties.json`, `.vscode/launch.json`)
+3. LTspice generated simulation outputs in `Captain-v2/hw_sim/` (`*.raw`, `*.db`, `*.log`)
