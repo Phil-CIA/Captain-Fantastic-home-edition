@@ -54,6 +54,23 @@ Primary locations:
 Keep on main branch:
 - Yes, now grouped under archive/.
 
+## Project E: Display Board Firmware (ESP32-C6)
+Purpose:
+- Firmware for the ESP32-C6 display board ("C6 Mini" Amazon clone).
+- Drives ST7796S TFT, XPT2046 touch, and SD card.
+- Acts as SPI slave to the host ESP32-C6 over a 10-pin IDC ribbon.
+- Handshake via GPIO0 (HOST_REQ) and GPIO1 (DISP_READY).
+
+Primary locations:
+- display-firmware/
+- display-firmware/include/host_link_config.h   (SPI + handshake pin defs)
+- display-firmware/include/display_local_config.h (TFT/touch/SD pin defs)
+- display-firmware/FLASHING_NOTES.md            (GPIO0 boot-safety rules)
+- docs/ESP32C6_DEVKITM_AMAZON_PINOUT.md         (board pinout reference)
+
+Keep on main branch:
+- Yes
+
 ## Cleanup Rules
 1. Use one PR per project area.
 2. No firmware logic changes mixed with file moves.
