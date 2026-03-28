@@ -17,7 +17,24 @@ Primary locations:
 Keep on main branch:
 - Yes
 
-## Project B: Captain-v2 Split-MPU Firmware
+## Project B: Display Board Firmware (ESP32-C6)
+Purpose:
+- Arduino / PlatformIO firmware for the ESP32-C6 "C6 mini" display board.
+- Drives TFT ST7796S + XPT2046 touch + SD card over local SPI.
+- Acts as SPI slave to the host ESP32-C6 over the IDC-10 ribbon cable.
+- Handshake via GPIO0 (HOST_REQ) and GPIO1 (DISP_READY).
+
+Primary locations:
+- display-firmware/
+- display-firmware/include/host_link_config.h  (SPI + handshake pin definitions)
+- display-firmware/include/display_local_config.h  (local peripheral pins)
+- display-firmware/FLASHING_NOTES.md  (bring-up and flashing troubleshooting)
+- display-firmware/platformio.ini
+
+Keep on main branch:
+- Yes
+
+## Project C: Captain-v2 Split-MPU Firmware
 Purpose:
 - New architecture with separate control and matrix firmware.
 
@@ -27,7 +44,7 @@ Primary locations:
 Keep on main branch:
 - Yes
 
-## Project C: Hardware Design and Manufacturing Files
+## Project D: Hardware Design and Manufacturing Files
 Purpose:
 - Electrical and board design artifacts, exports, and fabrication outputs.
 
@@ -42,7 +59,7 @@ Primary locations:
 Keep on main branch:
 - Yes, grouped under hardware/ with stable subfolders.
 
-## Project D: Archives, Experiments, and Recovery Copies
+## Project E: Archives, Experiments, and Recovery Copies
 Purpose:
 - Historical backups, temporary work, and restore snapshots.
 
@@ -59,10 +76,11 @@ Keep on main branch:
 2. No firmware logic changes mixed with file moves.
 3. Keep build-generated artifacts ignored and out of commits.
 4. Update README links after each move.
-5. Tag PR title with area: [legacy], [v2], [hardware], [archive].
+5. Tag PR title with area: [legacy], [display], [v2], [hardware], [archive].
 
 ## Suggested PR Order
 1. Add map and issue labels (this PR).
 2. Normalize archive placement.
 3. Normalize hardware folder structure.
 4. Final README/index updates.
+5. [display] Add display-firmware scaffold, pin config headers, flashing notes.
