@@ -1,4 +1,4 @@
-c# ESP32 Power Notes
+# ESP32 Power Notes
 
 ## Current Situation
 

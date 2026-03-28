@@ -1,1 +1,18 @@
-This folder contains documentation files for the project.
+This folder contains documentation and reference files for the Captain Fantastic project.
+
+Setup guides and reference docs:
+- DISPLAY_SYSTEM_README.md, DISPLAY_BUFFER_REFERENCE.md, DISPLAY_IMPLEMENTATION_SUMMARY.md
+- DIAGNOSTIC_TEST_MODE.md, SINGLE_DISPLAY_TEST.md, OLED_DISPLAY_ARCHITECTURE.md, VIRTUAL_DISPLAY_BUFFER.md
+- EXTERNAL_FLASH_OTA_README.md, EXTERNAL_FLASH_OTA_INTEGRATION_COMPLETE.md, EXTERNAL_FLASH_OTA_LESSONS_LEARNED.md
+- EXTERNAL_FLASH_OTA_INTEGRATION_EXAMPLE.cpp (code example/reference)
+- WIFI_SETUP.md, WIFI_STREAMING_SETUP.md, MP3_MUSIC_SETUP.md, SOUND_SYSTEM.md
+- LAMP_VOLTAGE_NOTES.md, POWER_NOTES.md, SWITCH_LAMP_MATRIX.md, SOLENOID_DRIVER_PCHANNEL.md
+- W25Q64_SETUP_INSTRUCTIONS.md
+
+Project organization:
+- REPO_INDEX.md (full repository index)
+- PROJECTS_MAP.md (project boundary map and cleanup rules)
+
+Handoff notes:
+- END_OF_DAY_HANDOFF_2026-03-26.rmd
+- NEXT_CHAT_PROMPT_2026-03-26.txt
