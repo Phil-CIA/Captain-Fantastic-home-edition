@@ -1,0 +1,11 @@
+Continue from END_OF_DAY_HANDOFF_2026-03-26.rmd.
+
+Goal:
+- Finish the final documentation/indexing pass in Captain-Fantastic-home-edition.
+- Push the cleanup/repo-index branch.
+- Return the PR link.
+
+Constraints:
+- No firmware logic changes.
+- Keep this as documentation/navigation cleanup only.
+- Preserve the current repo split between Captain-Fantastic-home-edition and Development-Station-Power-Supply.
