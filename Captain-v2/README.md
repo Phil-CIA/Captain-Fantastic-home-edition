@@ -11,10 +11,27 @@ The previous single-board design had switching-noise/ground-loop issues during a
 
 ## Environments
 
-- `captain_control` (default)
-- `captain_matrix`
+| Environment            | Board          | Role |
+|------------------------|----------------|------|
+| `captain_control`      | ESP32 DevKit   | Main game controller (default) |
+| `captain_control_ota`  | ESP32 DevKit   | Same, OTA upload variant |
+| `captain_matrix`       | ESP32 DevKit   | Switch/lamp matrix board |
+| `captain_display`      | ESP32-C6       | Display-board SPI slave |
+| `captain_host_display` | ESP32-C6       | Host display-link SPI master |
 
 Edit COM ports in `platformio.ini` as needed.
+
+## SPI Handshake (display link)
+
+Two extra GPIO lines added to the IDC ribbon between host and display ESP32-C6
+boards for RTS/CTS-style flow control:
+
+- **GPIO0 / IDC pin 5** — REQUEST (host → display)
+- **GPIO1 / IDC pin 9** — READY   (display → host)
+
+See `docs/SPI_HANDSHAKE.md` for full protocol description, timing diagrams,
+and bring-up checklist.  Source: `include/spi_handshake_config.h`,
+`include/spi_handshake.h`, `src/spi_handshake.cpp`.
 
 ## First migration pass included
 
