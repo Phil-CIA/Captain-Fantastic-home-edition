@@ -1,0 +1,105 @@
+# End Of Day Handoff - 2026-03-31
+
+## Current Restart Point
+
+The project is paused at the matrix-board hardware verification stage.
+
+The firmware side is already moved onto the ESP32-C6 ESP-IDF path and the matrix project is building successfully. The next practical step is to power up the matrix board on the bench and verify that the implemented register-based I2C contract matches the actual hardware.
+
+## Active Project For Next Session
+
+Use:
+- `Captain-v2-matrix/`
+
+PlatformIO environment:
+- `captain_matrix_idf`
+
+Target board:
+- `esp32-c6-devkitc-1`
+
+Key config file:
+- `Captain-v2-matrix/platformio.ini`
+
+Main runtime file:
+- `Captain-v2-matrix/src/matrix_app_main.cpp`
+
+Protocol and hardware contract:
+- `Captain-v2-matrix/README.md`
+
+## What Was Completed Before This Pause
+
+1. Matrix firmware was migrated from Arduino/C6 dead-end to ESP-IDF for ESP32-C6.
+2. Matrix board protocol was converted to an HT16K33-style register device model on I2C.
+3. Shared protocol/mapping headers were updated so the matrix and control sides stay aligned.
+4. Matrix runtime behavior was ported into the ESP-IDF app:
+   - lamp RAM handling
+   - switch scan
+   - lamp refresh
+   - diagnostics registers
+   - I2C register pointer read/write behavior
+5. Matrix documentation was updated to describe the current register contract.
+6. A redesign parking-lot document was created for hardware items that should be captured for the next board revision.
+7. The current hardware discussion concluded that lowering the high-side rail voltage is the preferred first step before attempting transistor substitutions in the gate-drive stage.
+
+## Where The Discussion Diverged
+
+The session paused matrix bring-up to analyze the high-side driver rail and the BSS84/BSS138 gate-drive stage.
+
+Conclusion from that discussion:
+- Lowering the rail is the preferred first action.
+- That decision is now documented as a redesign item, not as an immediate firmware blocker.
+- Proceed with matrix-board verification after the rail decision is accounted for on the bench.
+
+## Immediate Goal For Tomorrow
+
+Power up the matrix board and verify that the firmware matches the real board behavior.
+
+## Bench Verification Checklist
+
+1. Open `Captain-v2-matrix/` as the active project on the other machine.
+2. Confirm the correct serial/upload path for that machine before flashing.
+3. Build and upload the matrix firmware.
+4. Verify the board boots and the firmware is alive on serial output.
+5. Confirm the device appears on I2C at address `0x24`.
+6. Verify command behavior:
+   - `0x21` enables system
+   - `0x81` enables outputs
+   - `0xE0..0xEF` changes pulse-width level
+7. Verify register windows:
+   - `0x00..0x07` lamp RAM writes affect expected lamps
+   - `0x40..0x43` switch bytes reflect physical switch closures
+   - `0xF0..0xF3` diagnostics return sane status values
+8. Check for any row/column inversion, pin-map mismatch, polarity issue, or timing issue.
+9. Record every mismatch immediately in docs before changing code.
+10. If hardware behaves correctly, continue toward control-board integration.
+
+## Known Open Items
+
+1. Real hardware validation is still pending.
+2. Flash-size / target consistency should be confirmed during bench testing.
+3. Old Arduino-style test-console parity has not been fully ported into the IDF path.
+4. High-side rail reduction remains the preferred next hardware iteration item for the redesign parking lot.
+
+## If Problems Show Up Tomorrow
+
+If the board does not respond correctly, inspect in this order:
+1. Power rails and ground reference.
+2. ESP32-C6 boot and serial output.
+3. I2C pins and address `0x24`.
+4. Row/column pin mapping against the matrix board wiring.
+5. Shift-register wiring and latch/clock/data behavior.
+6. Switch input polarity and pull direction.
+7. Register-map assumptions documented in `Captain-v2-matrix/README.md`.
+
+## Documents To Keep Open
+
+1. `Captain-v2-matrix/README.md`
+2. `docs/NEXT_ITERATION_RECOMMENDATIONS.md`
+3. `README.md`
+4. `NEXT_CHAT_PROMPT_2026-03-31.txt`
+
+## Recommended Next Chat Prompt
+
+Continue from `END_OF_DAY_HANDOFF_2026-03-31.rmd`.
+
+Use `Captain-v2-matrix/` as the active project. The immediate task is bench verification of the ESP32-C6 matrix board on real hardware. Build and upload the `captain_matrix_idf` environment, verify I2C device behavior at `0x24`, test lamp RAM, switch RAM, diagnostics registers, and document any row/column, polarity, timing, or wiring mismatches before changing code. Keep `docs/NEXT_ITERATION_RECOMMENDATIONS.md` updated with any redesign items found during verification.

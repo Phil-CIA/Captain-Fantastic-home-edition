@@ -40,6 +40,8 @@ This repo contains **multiple PlatformIO projects**:
 - Matrix MCU appears on I2C as a register-based peripheral at `0x24` (HT16K33-style model)
 - Matrix protocol details and test workflow are documented in:
 	- `Captain-v2-matrix/README.md`
+- Hardware iteration note (March 2026): reduce the high-side rail voltage first to improve BSS84/BSS138 gate-drive margin before pursuing transistor substitutions (documented in `Captain-v2-matrix/README.md`, section 11)
+- Redesign parking lot for next board iteration: `docs/NEXT_ITERATION_RECOMMENDATIONS.md`
 
 ## Music Streaming Server
 

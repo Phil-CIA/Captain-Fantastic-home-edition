@@ -162,3 +162,22 @@ Wire.requestFrom(0x24, 4);
 4. Toggle physical switches and verify switch bytes (`0x40..0x43`) change.
 5. Sweep pulse level (`0xE0..0xEF`) and verify visible/intensity timing behavior.
 6. Read diagnostics (`0xF0..0xF3`) and confirm status bits/values.
+
+## 11. Recommended Hardware Iteration (March 2026)
+
+Decision: lower the high-side rail voltage instead of pushing the BSS84/BSS138 pre-driver stage closer to its voltage limits.
+
+Reasoning from original design behavior:
+- The original TIP125-based path tolerated a large conduction drop (`VCE` around 4 V in this use case).
+- The current MOSFET path has much lower conduction drop (`VDS` typically below 0.2 V at 5 A for the selected device), which can increase effective stress elsewhere if the rail is left high.
+- With measured rail excursions near 25.5 V, the small-signal gate-drive devices (BSS84/BSS138 stage) are at higher risk of gate overstress and non-deterministic turn-off behavior.
+
+Practical guidance:
+- Prefer rail reduction as the first hardware iteration.
+- Re-validate ON/OFF gate-source voltages for the BSS84/BSS138 stage and the power MOSFET after rail adjustment.
+- Keep this as a safety and reliability step before any component substitutions.
+
+Cross-reference:
+- Canonical redesign parking lot: `docs/NEXT_ITERATION_RECOMMENDATIONS.md`.
+- Next-iteration handoff prompt: `NEXT_CHAT_PROMPT_2026-03-26.txt`.
+- Top-level status summary: `README.md` (Current Development Focus).

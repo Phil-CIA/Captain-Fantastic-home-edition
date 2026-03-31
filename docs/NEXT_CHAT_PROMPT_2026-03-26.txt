@@ -1,3 +1,5 @@
+Superseded: use `NEXT_CHAT_PROMPT_2026-03-31.txt` and `END_OF_DAY_HANDOFF_2026-03-31.rmd`.
+
 Continue from END_OF_DAY_HANDOFF_2026-03-26.rmd.
 
 Goal:
@@ -17,3 +19,9 @@ Constraints:
 - Keep matrix test logic segmented in `matrix_test_support.*` for easy removal later.
 - Update docs whenever behavior or mapping changes.
 - Preserve repo split between Captain and WorkStation projects.
+
+Hardware iteration references (linked decision):
+- `docs/NEXT_ITERATION_RECOMMENDATIONS.md` (canonical parking lot for board redesign)
+- `Captain-v2-matrix/README.md` section 11: Recommended Hardware Iteration (March 2026).
+- `README.md` Current Development Focus: high-side rail reduction note.
+- `docs/LAMP_VOLTAGE_NOTES.md`: lamp-voltage context and validation considerations.
