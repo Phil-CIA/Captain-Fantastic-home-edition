@@ -12,17 +12,17 @@ The board presents itself on I2C like a peripheral IC (HT16K33-style behavior):
 ## 2. Hardware Summary
 
 ### MCU
-- ESP32 (current PlatformIO target: `esp32dev`)
+- ESP32-C6 (current PlatformIO target: `esp32-c6-devkitc-1`)
 
 ### I2C Interface
 - Slave address: `0x24`
-- SDA: GPIO21
-- SCL: GPIO22
+- SDA: GPIO16
+- SCL: GPIO17
 - Bus speed: 100 kHz
 
 ### Matrix Signals
-- Row drivers (8): GPIO15, GPIO16, GPIO17, GPIO5, GPIO18, GPIO19, GPIO23, GPIO13
-- Switch columns (4 inputs): GPIO35, GPIO34, GPIO39, GPIO36
+- Row drivers (8): GPIO3, GPIO2, GPIO11, GPIO10, GPIO8, GPIO7, GPIO6, GPIO4
+- Switch columns (4 inputs): GPIO20, GPIO21, GPIO22, GPIO23
 
 ### Lamp Shift Registers (74HC595 chain)
 - DATA (DS): GPIO2

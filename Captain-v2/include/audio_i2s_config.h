@@ -7,7 +7,7 @@
 constexpr i2s_port_t CAPTAIN_AUDIO_I2S_PORT = I2S_NUM_0;
 constexpr uint8_t CAPTAIN_AUDIO_DIN_PIN = 25;
 constexpr uint8_t CAPTAIN_AUDIO_BCLK_PIN = 14;
-constexpr uint8_t CAPTAIN_AUDIO_LRCK_PIN = 15;
+constexpr uint8_t CAPTAIN_AUDIO_LRCK_PIN = 13;
 
 // Keep default OFF until hardware routing is physically confirmed.
 #ifndef CAPTAIN_AUDIO_SWAP_BCLK_LRCK_FOR_TEST

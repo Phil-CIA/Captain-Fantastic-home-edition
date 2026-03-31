@@ -218,7 +218,7 @@ void setup() {
     pinMode(CAPTAIN_MATRIX_SR_LATCH_PIN, OUTPUT);
     writeShiftRegister16(0);
 
-    Wire.begin(static_cast<int>(CAPTAIN_MATRIX_I2C_ADDRESS), CAPTAIN_I2C_SDA_PIN, CAPTAIN_I2C_SCL_PIN, CAPTAIN_I2C_FREQUENCY_HZ);
+    Wire.begin(static_cast<int>(CAPTAIN_MATRIX_I2C_ADDRESS), CAPTAIN_MATRIX_I2C_SDA_PIN, CAPTAIN_MATRIX_I2C_SCL_PIN, CAPTAIN_I2C_FREQUENCY_HZ);
     Wire.onReceive(onI2CReceive);
     Wire.onRequest(onI2CRequest);
 

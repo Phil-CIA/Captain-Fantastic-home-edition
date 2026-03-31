@@ -5,8 +5,8 @@
 #include "captain_protocol.h"
 #include "headbox_595_config.h"
 
-constexpr uint8_t CAPTAIN_MATRIX_ROW_PINS[CAPTAIN_SWITCH_ROWS] = {15, 16, 17, 5, 18, 19, 23, 13};
-constexpr uint8_t CAPTAIN_MATRIX_SWITCH_COL_PINS[CAPTAIN_SWITCH_COLS] = {35, 34, 39, 36};
+constexpr uint8_t CAPTAIN_MATRIX_ROW_PINS[CAPTAIN_SWITCH_ROWS] = {3, 2, 11, 10, 8, 7, 6, 4};
+constexpr uint8_t CAPTAIN_MATRIX_SWITCH_COL_PINS[CAPTAIN_SWITCH_COLS] = {20, 21, 22, 23};
 
 constexpr const char* CAPTAIN_SWITCH_NAMES[CAPTAIN_SWITCH_ROWS][CAPTAIN_SWITCH_COLS] = {
     {"S20 Outhole", "Tilt (moved to direct input)", "S11 Spinner R", "S22 Return Lane R"},
