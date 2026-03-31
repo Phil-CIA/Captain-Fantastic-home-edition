@@ -22,12 +22,10 @@ constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
 constexpr uint8_t HEARTBEAT_PIN = 2;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 
-uint32_t pollSequence = 0;
 uint32_t displayScore = 0;
 uint32_t lastDisplayUpdate = 0;
 uint8_t previousSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
 uint16_t headboxPattern = 0;
-ControlToMatrixCommand outbound = {};
 bool solenoidActive[SOLENOID_COUNT] = {false};
 uint32_t solenoidStartedAtMs[SOLENOID_COUNT] = {0};
 bool directInputStable[DIRECT_INPUT_COUNT] = {false};
@@ -53,8 +51,62 @@ uint32_t lastOtaVisualToggleMs = 0;
 bool otaVisualState = false;
 uint32_t lastHeadboxAttractStepMs = 0;
 uint8_t headboxAttractStep = 0;
+bool matrixDeviceReady = false;
 
 void updateHeadboxLamps(uint16_t pattern);
+
+bool matrixWriteCommandByte(uint8_t value) {
+    Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
+    Wire.write(value);
+    return Wire.endTransmission() == 0;
+}
+
+bool matrixWriteRegisters(uint8_t startRegister, const uint8_t* data, size_t len) {
+    Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
+    Wire.write(startRegister);
+    Wire.write(data, len);
+    return Wire.endTransmission() == 0;
+}
+
+bool matrixReadRegisters(uint8_t startRegister, uint8_t* out, size_t len) {
+    Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
+    Wire.write(startRegister);
+    if (Wire.endTransmission(false) != 0) {
+        return false;
+    }
+
+    const size_t received = Wire.requestFrom(static_cast<int>(CAPTAIN_MATRIX_I2C_ADDRESS), static_cast<int>(len));
+    if (received != len) {
+        while (Wire.available()) {
+            Wire.read();
+        }
+        return false;
+    }
+
+    for (size_t index = 0; index < len; index++) {
+        out[index] = static_cast<uint8_t>(Wire.read());
+    }
+    return true;
+}
+
+void initMatrixDevice() {
+    const bool pulseOk = matrixWriteCommandByte(static_cast<uint8_t>(CAPTAIN_MATRIX_CMD_PULSE_WIDTH_BASE | CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL));
+    const bool systemOk = matrixWriteCommandByte(static_cast<uint8_t>(CAPTAIN_MATRIX_CMD_SYSTEM_SETUP | CAPTAIN_MATRIX_CMD_SYSTEM_ENABLE));
+    const bool outputOk = matrixWriteCommandByte(static_cast<uint8_t>(CAPTAIN_MATRIX_CMD_OUTPUT_SETUP | CAPTAIN_MATRIX_CMD_OUTPUT_ENABLE));
+    matrixDeviceReady = pulseOk && systemOk && outputOk;
+
+    if (matrixDeviceReady) {
+        Serial.printf("Matrix device ready at 0x%02X (pulseLevel=%u)\n",
+                      CAPTAIN_MATRIX_I2C_ADDRESS,
+                      static_cast<unsigned>(CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL));
+    } else {
+        Serial.printf("Matrix device init failed at 0x%02X (pulse=%u system=%u output=%u)\n",
+                      CAPTAIN_MATRIX_I2C_ADDRESS,
+                      pulseOk ? 1u : 0u,
+                      systemOk ? 1u : 0u,
+                      outputOk ? 1u : 0u);
+    }
+}
 
 void updateOtaVisual(uint32_t now) {
     if (now - lastOtaVisualToggleMs < CAPTAIN_OTA_VISUAL_INTERVAL_MS) {
@@ -631,12 +683,12 @@ uint32_t scoreForSwitch(uint8_t row, uint8_t col) {
     return 0;
 }
 
-void handleSwitchEdges(const MatrixToControlFrame& frame) {
+void handleSwitchEdges(const uint8_t* switchBits) {
     for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
         for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
             const size_t bit = captainSwitchBitIndex(row, col);
             const bool previous = captainGetBit(previousSwitchBits, bit);
-            const bool current = captainGetBit(frame.switchBits, bit);
+            const bool current = captainGetBit(switchBits, bit);
             if (!previous && current) {
                 const uint32_t points = scoreForSwitch(row, col);
                 displayScore += points;
@@ -657,44 +709,30 @@ void handleSwitchEdges(const MatrixToControlFrame& frame) {
         }
     }
 
-    memcpy(previousSwitchBits, frame.switchBits, sizeof(previousSwitchBits));
+    memcpy(previousSwitchBits, switchBits, sizeof(previousSwitchBits));
 }
 
-bool readMatrixFrame(MatrixToControlFrame& frame) {
-    const size_t frameSize = sizeof(MatrixToControlFrame);
-    const size_t received = Wire.requestFrom(static_cast<int>(CAPTAIN_MATRIX_I2C_ADDRESS), static_cast<int>(frameSize));
-    if (received != frameSize) {
-        return false;
-    }
-
-    uint8_t* raw = reinterpret_cast<uint8_t*>(&frame);
-    for (size_t i = 0; i < frameSize; i++) {
-        raw[i] = static_cast<uint8_t>(Wire.read());
-    }
-
-    const uint8_t expected = captainChecksum(raw, frameSize - 1);
-    return expected == frame.checksum;
+bool readMatrixSwitches(uint8_t* switchBits) {
+    return matrixReadRegisters(CAPTAIN_MATRIX_REG_SWITCH_BASE, switchBits, CAPTAIN_SWITCH_BYTES);
 }
 
 void writeMatrixCommand() {
-    outbound.sequence = ++pollSequence;
-
-    memset(outbound.lampBits, 0, sizeof(outbound.lampBits));
-    captainSetBit(outbound.lampBits, captainLampBitIndex(1, 1), true);
-    captainSetBit(outbound.lampBits, captainLampBitIndex(2, 1), true);
-    captainSetBit(outbound.lampBits, captainLampBitIndex(3, 1), true);
+    uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
+    lampRows[1] |= captainMatrixLampRowMask(1);
+    lampRows[2] |= captainMatrixLampRowMask(1);
+    lampRows[3] |= captainMatrixLampRowMask(1);
 
     const bool blink = ((millis() / 350) % 2) != 0;
-    captainSetBit(outbound.lampBits, captainLampBitIndex(4, 1), blink);
-    captainSetBit(outbound.lampBits, captainLampBitIndex(2, 3), blink);
-    captainSetBit(outbound.lampBits, captainLampBitIndex(5, 3), blink);
+    if (blink) {
+        lampRows[4] |= captainMatrixLampRowMask(1);
+        lampRows[2] |= captainMatrixLampRowMask(3);
+        lampRows[5] |= captainMatrixLampRowMask(3);
+    }
 
-    uint8_t* raw = reinterpret_cast<uint8_t*>(&outbound);
-    outbound.checksum = captainChecksum(raw, sizeof(ControlToMatrixCommand) - 1);
-
-    Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
-    Wire.write(raw, sizeof(ControlToMatrixCommand));
-    Wire.endTransmission();
+    const bool writeOk = matrixWriteRegisters(CAPTAIN_MATRIX_REG_LAMP_BASE, lampRows, sizeof(lampRows));
+    if (!writeOk) {
+        matrixDeviceReady = false;
+    }
 }
 
 void updateHeadboxLamps(uint16_t pattern) {
@@ -782,6 +820,7 @@ void setup() {
     }
     initExternalFlashProbe();
     initWifiAndOta();
+    initMatrixDevice();
 
     initDisplay();
     displayStartupTest();
@@ -833,11 +872,18 @@ void loop() {
             headboxPattern = updateHeadboxAttractLoop(now);
             updateHeadboxLamps(headboxPattern);
         } else {
+            if (!matrixDeviceReady) {
+                initMatrixDevice();
+            }
+
             writeMatrixCommand();
 
-            MatrixToControlFrame frame = {};
-            if (readMatrixFrame(frame)) {
-                handleSwitchEdges(frame);
+            uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
+            if (readMatrixSwitches(switchBits)) {
+                handleSwitchEdges(switchBits);
+                matrixDeviceReady = true;
+            } else {
+                matrixDeviceReady = false;
             }
 
             const bool blink = ((now / 350) % 2) != 0;

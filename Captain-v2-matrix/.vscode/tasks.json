@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Captain-v2-matrix: Build",
+      "type": "shell",
+      "command": "${env:USERPROFILE}/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_matrix"
+      ],
+      "group": "build"
+    },
+    {
+      "label": "Captain-v2-matrix: Upload",
+      "type": "shell",
+      "command": "${env:USERPROFILE}/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_matrix",
+        "-t",
+        "upload"
+      ],
+      "group": "build"
+    }
+  ]
+}

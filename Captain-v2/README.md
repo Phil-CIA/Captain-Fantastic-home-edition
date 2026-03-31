@@ -67,6 +67,20 @@ KiCad schematics and PCB layouts are organized under `../hardware/kicad/`:
 
 See `../docs/` for hardware documentation, design notes, and integration guides.
 
+## Board-Specific Projects
+
+Board-specific PlatformIO project folders live at the repository root for isolated bring-up and board-by-board work:
+
+| Project folder | Purpose |
+|----------------|---------|
+| `../Captain-v2-control/` | Separate PlatformIO project for the main control board firmware |
+| `../Captain-v2-matrix/` | Separate PlatformIO project for the matrix board firmware and standalone test support |
+
+Both folders point at the shared source tree under `Captain-v2/`, so firmware logic stays in one place while build/upload configuration stays isolated per board.
+
+Matrix-board protocol and bring-up reference:
+- `../Captain-v2-matrix/README.md` (datasheet-style firmware contract)
+
 ## Next
 
 1. Replace placeholder pin maps in each `main` file.
