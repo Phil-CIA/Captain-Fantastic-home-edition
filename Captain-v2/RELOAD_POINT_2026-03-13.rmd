@@ -1,57 +1,51 @@
-# Captain v2 Reload Point - 2026-03-13
+# Captain v2 Reload Point - 2026-03-31
 
 ## Current State
-- Control firmware image is running and attract loop behavior is active.
-- Attract timing currently configured as:
-  - period: 1000 ms total sweep
-  - slot: 100 ms per lamp
-  - on: 50 ms
-  - off: 50 ms
-  - laps: 1
-- OTA setup is present and starts when WiFi joins.
-- External W25Q128 flash probe and self-test are implemented.
+- Matrix board firmware is now register-based over I2C (HT16K33-style behavior).
+- Control board firmware has been updated to use matrix registers (no framed packet exchange).
+- Matrix board is the current bring-up priority before reconnecting full system.
+- Board-specific PlatformIO projects now exist for cleaner workflows:
+  - `../Captain-v2-matrix/`
+  - `../Captain-v2-control/`
 
-## Confirmed Runtime Boot Lines
-Expected boot/runtime identifiers from serial monitor:
-- CAPTAIN_V2 setup start
-- Attract config: enabled=1 period=1000 minStep=20 laps=1
-- Attract timing: slot=100ms on=50ms off=50ms sweep=1000ms laps=1
+## Matrix Protocol Quick Snapshot
+- Address: `0x24`
+- Commands:
+  - `0x20/0x21` system off/on
+  - `0x80/0x81` output off/on
+  - `0xE0..0xEF` pulse-width level
+- Register windows:
+  - Lamp RAM `0x00..0x07`
+  - Switch bytes `0x40..0x43`
+  - Diagnostics `0xF0..0xF3`
 
-## Build/Upload Baseline
-### Captain-v2 project (primary)
-- Default environment: captain_control
-- Serial upload port: COM5
-- Known-good command:
-
+## Build Baseline (Current)
 ```powershell
-cd "c:\Users\user\Esp32 projects VScode\Captain-Fantastic-home-edition\Captain-v2"
-C:\Users\user\.platformio\penv\Scripts\platformio.exe run -e captain_control -t upload --upload-port COM5
+cd "c:\Users\forch\VS Code github\Captain-Fantastic-home-edition\Captain-v2-matrix"
+C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_matrix
+
+cd "c:\Users\forch\VS Code github\Captain-Fantastic-home-edition\Captain-v2-control"
+C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_control
 ```
 
-### Important
-- Avoid running monitor and upload in the same busy shared terminal at the same time.
-- Prior failures during this session were mostly interrupted uploads (KeyboardInterrupt), not firmware compile failures.
+## Test Support Segmentation
+- Matrix standalone test logic is isolated in:
+  - `include/matrix_test_support.h`
+  - `src/matrix_test_support.cpp`
+- Current matrix build enables test support via `CAPTAIN_MATRIX_TEST_SUPPORT=1`.
 
-## Known Issues / Watch Items
-1. Matrix board I2C response was previously missing at address 0x24 in at least one boot log.
-2. Tilt input (GPIO34) is noisy/floating in current hardware state and may spam press/release logs.
-3. Root project upload task (combined_rtos) has failed intermittently and is not the preferred path for Captain-v2 control firmware work.
-
-## Current Behavior Design
-- Attract mode is deterministic pulse-chase timing.
-- Attract-mode loop was adjusted to avoid matrix I2C workload interference while attract is active.
-- OTA visual mode blinks all headbox lamps and score display while OTA transfer is in progress.
-
-## Next Resume Steps
-1. Upload captain_control from Captain-v2 using COM5 command above.
-2. Open monitor and verify the three boot/timing lines.
-3. Observe full sweep duration (~1 second for 10 lamps).
-4. If sweep still appears slow, check hardware-level lamp driver behavior and matrix board wiring/power/address.
-5. Optionally add software debounce/filtering for Tilt input if log spam remains.
+## Primary Next Resume Steps
+1. Upload matrix firmware from `Captain-v2-matrix/`.
+2. Validate matrix board as standalone I2C peripheral at `0x24`.
+3. Verify:
+   - lamp writes (`0x00..0x07`)
+   - switch reads (`0x40..0x43`)
+   - diagnostics (`0xF0..0xF3`)
+4. Only after matrix validation, proceed with control/matrix integration tests.
 
 ## Fast Resume Checklist
-- [ ] Correct folder open: Captain-v2
-- [ ] Upload via captain_control
-- [ ] Confirm COM5 not occupied by another monitor
-- [ ] Verify boot signature lines
-- [ ] Re-check attract visual cadence on real lamps
+- [ ] Open `Captain-v2-matrix/`
+- [ ] Upload and run matrix firmware
+- [ ] Confirm `0x24` appears on bus
+- [ ] Confirm lamp and switch register behavior
+- [ ] Record any pin/timing mismatches and patch docs/firmware

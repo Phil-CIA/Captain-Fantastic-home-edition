@@ -15,19 +15,31 @@ Firmware and hardware files for a restored Captain Fantastic pinball machine run
 
 ## PlatformIO Projects
 
-This repo contains **two separate PlatformIO projects**:
+This repo contains **multiple PlatformIO projects**:
 
 ### 1. Legacy Firmware (root)
 - `platformio.ini` at the repository root
 - Active environment: `combined_rtos`
 - Targets a single ESP32 running gameplay, displays, sound, and OTA
 
-### 2. Captain v2 (split-MPU)
+### 2. Captain v2 shared source tree
 - `Captain-v2/platformio.ini`
-- Active environment: `captain_control`
-- Separates control logic and switch/lamp matrix scanning across two ESP32 boards
+- Shared build definitions and source for split-MPU firmware
+- Includes environments for control, matrix, and display-link variants
 
-> **VS Code tip:** Open each project folder separately in VS Code so PlatformIO picks up the correct `platformio.ini`. Opening the repo root will load the legacy project; opening `Captain-v2/` will load the v2 project.
+### 3. Captain v2 board-specific projects
+- `Captain-v2-control/platformio.ini` (control board focused project)
+- `Captain-v2-matrix/platformio.ini` (matrix board focused project)
+- Both reference shared source under `Captain-v2/` and keep board workflows isolated
+
+> **VS Code tip:** Open the specific project folder you are actively working on (`Captain-v2-control/` or `Captain-v2-matrix/`) so tasks and upload settings stay board-specific.
+
+## Current Development Focus
+
+- Matrix board is the current bring-up target (built hardware available now)
+- Matrix MCU appears on I2C as a register-based peripheral at `0x24` (HT16K33-style model)
+- Matrix protocol details and test workflow are documented in:
+	- `Captain-v2-matrix/README.md`
 
 ## Music Streaming Server
 

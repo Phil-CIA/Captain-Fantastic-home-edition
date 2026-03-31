@@ -1,49 +1,53 @@
-# End Of Day Handoff - 2026-03-26
+# End Of Day Handoff - 2026-03-31 (Matrix-First Checkpoint)
 
-## What Was Completed
-1. Captain-Fantastic-home-edition was cleaned up and pushed to GitHub.
-2. WorkStation was initialized as a git repo, linked to its existing GitHub repository, merged safely with remote history, and pushed.
-3. Captain repository cleanup was broken into safe file-move PRs.
-4. Project boundaries are now documented.
-
-## GitHub Repositories
-1. Captain repo
-   - https://github.com/Phil-CIA/Captain-Fantastic-home-edition
-2. WorkStation repo
-   - https://github.com/Phil-CIA/Development-Station-Power-Supply
-
-## Captain Repo Cleanup Completed
-1. Project map added and merged
-2. Archive folders normalized under archive/ and merged
-3. Hardware files normalized under hardware/ and merged
+## What Was Completed This Session
+1. Hardware file organization was updated for current v2 boards:
+   - `hardware/kicad/captain_control/`
+   - `hardware/kicad/captain_matrix/`
+   - `hardware/kicad/7seg_display/`
+   - `hardware/kicad/legacy/`
+2. Matrix-board firmware protocol was migrated from framed packets to HT16K33-style register I2C behavior.
+3. Control-board firmware was updated to use matrix register writes/reads instead of frame checksum protocol.
+4. Matrix standalone test support was segmented into removable module files.
+5. Separate board-specific PlatformIO project folders were created:
+   - `Captain-v2-control/`
+   - `Captain-v2-matrix/`
+6. Matrix datasheet-style firmware contract doc was added:
+   - `Captain-v2-matrix/README.md`
 
 ## Current Captain Repo State
-1. Branch checked out locally right now: cleanup/repo-index
-2. main already contains the archive and hardware normalization merges
-3. Working tree is clean
-4. Latest main seen locally: b4f4afe
+1. Branch: `main`
+2. Matrix-first architecture docs and firmware updates are pushed.
+3. Matrix board is the active development target before full-system integration.
+4. Core matrix I2C contract is now stable enough for board-level bring-up.
 
-## Current WorkStation Repo State
-1. Branch: main
-2. Working tree is clean
-3. HEAD: db0fd76
-4. Remote main is updated
+## Matrix I2C Contract (Current)
+1. Address: `0x24`
+2. Command bytes:
+   - `0x20/0x21` system off/on
+   - `0x80/0x81` output off/on
+   - `0xE0..0xEF` global pulse-width level
+3. Register windows:
+   - Lamp RAM: `0x00..0x07`
+   - Switch bytes: `0x40..0x43`
+   - Diagnostics: `0xF0..0xF3`
 
 ## Important Notes
-1. Only local-only build/cache artifacts remain outside GitHub, by design:
-   - .pio/
-   - machine-specific .vscode files
-   - LTspice generated outputs
-2. No firmware logic changes were mixed into the repo-organization PRs.
-3. The next cleanup step should be documentation/indexing only, unless the user wants to resume firmware work instead.
+1. Matrix test-only behavior is intentionally isolated for easy removal later:
+   - `Captain-v2/include/matrix_test_support.h`
+   - `Captain-v2/src/matrix_test_support.cpp`
+2. Current matrix project builds with `CAPTAIN_MATRIX_TEST_SUPPORT=1`.
+3. Upload/bench validation is pending when hardware programming setup is available.
 
 ## Recommended First Step Next Chat
-1. Finish and push the final indexing branch with:
-   - REPO_INDEX.md
-   - this handoff file
-   - optional README navigation updates
-2. Then open a PR for cleanup/repo-index
+1. Open `Captain-v2-matrix/` as the active project.
+2. Upload matrix firmware and validate baseline:
+   - device appears at I2C `0x24`
+   - lamp RAM writes (`0x00..0x07`) drive expected rows/columns
+   - switch reads (`0x40..0x43`) match physical switch closures
+   - diagnostics (`0xF0..0xF3`) report valid status
+3. Capture any board-level mismatches (pin map, polarity, timing) and patch firmware/docs.
 
 ## Suggested Next Chat Prompt
 Continue from END_OF_DAY_HANDOFF_2026-03-26.rmd.
-Finish the final documentation/indexing pass in Captain-Fantastic-home-edition, push the cleanup/repo-index branch, and give me the PR link. Do not change firmware code unless you find accidental documentation-only issues.
+Focus on matrix board bring-up using Captain-v2-matrix as the active PlatformIO project, validate the register map at 0x24 on hardware, and update firmware/docs for any discovered pin/timing mismatches.

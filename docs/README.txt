@@ -13,6 +13,10 @@ Project organization:
 - REPO_INDEX.md (full repository index)
 - PROJECTS_MAP.md (project boundary map and cleanup rules)
 
+Matrix board development:
+- Captain-v2-matrix/README.md (datasheet-style matrix firmware contract)
+- Captain-v2/include/matrix_test_support.h + Captain-v2/src/matrix_test_support.cpp (segmented matrix test harness)
+
 Handoff notes:
 - END_OF_DAY_HANDOFF_2026-03-26.rmd
 - NEXT_CHAT_PROMPT_2026-03-26.txt

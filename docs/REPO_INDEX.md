@@ -14,23 +14,38 @@
    - docs/
 2. Captain-v2 split-MPU work
    - Captain-v2/
+   - Captain-v2-control/
+   - Captain-v2-matrix/
 3. Hardware assets
-   - hardware/kicad/esp32vroom/
-   - hardware/kicad/libs/
-   - hardware/gerbers/root-export-esp32vroom/
-   - hardware/gerbers/legacy-gerber-files/
-   - hardware/backups/esp32vroom-backups/
+   - hardware/kicad/captain_control/ — Main control board schematic and PCB
+   - hardware/kicad/captain_matrix/ — Switch/lamp matrix board schematic and PCB
+   - hardware/kicad/7seg_display/ — Standalone 7-segment display board
+   - hardware/kicad/legacy/ — Hat board (old single-board design, superseded)
+   - hardware/kicad/esp32vroom/ — Original ESP32Vroom project (historical)
+   - hardware/kicad/libs/ — Shared KiCad symbols and footprints
+   - hardware/gerbers/root-export-esp32vroom/ — Legacy gerber exports
+   - hardware/gerbers/legacy-gerber-files/ — Older gerber exports
+   - hardware/backups/esp32vroom-backups/ — Historical hardware backups
 4. Archive material
    - archive/backups/
    - archive/battery-charger/
    - archive/rtos-main-firmware-restore/
 
-## Current Cleanup Status
-1. Project map PR merged
-2. Archive normalization PR merged
-3. Hardware normalization PR merged
-4. Final indexing/handoff branch merged
-5. PlatformIO/VS Code project and file organization complete
+## Current Firmware/Repo Status (2026-03-31)
+1. Matrix/control firmware link migrated to register-style I2C model (HT16K33-like operation)
+2. Matrix board address: `0x24` on SDA=21/SCL=22
+3. Matrix register windows implemented:
+   - Lamp RAM `0x00..0x07`
+   - Switch bytes `0x40..0x43`
+   - Diagnostics `0xF0..0xF3`
+4. Matrix standalone test support segmented into dedicated module:
+   - `Captain-v2/include/matrix_test_support.h`
+   - `Captain-v2/src/matrix_test_support.cpp`
+5. Separate board-focused PlatformIO projects added:
+   - `Captain-v2-control/`
+   - `Captain-v2-matrix/`
+6. Matrix board datasheet-style firmware contract added:
+   - `Captain-v2-matrix/README.md`
 
 ## Local-Only Files That Should Stay Out Of GitHub
 1. .pio/ build output

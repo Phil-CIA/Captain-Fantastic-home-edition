@@ -1,11 +1,19 @@
 Continue from END_OF_DAY_HANDOFF_2026-03-26.rmd.
 
 Goal:
-- Finish the final documentation/indexing pass in Captain-Fantastic-home-edition.
-- Push the cleanup/repo-index branch.
-- Return the PR link.
+- Matrix-first bring-up in Captain-Fantastic-home-edition.
+- Use `Captain-v2-matrix/` as the active project.
+- Validate matrix board hardware against current register I2C contract.
+
+Current matrix contract:
+- I2C address `0x24`
+- Commands: `0x20/0x21`, `0x80/0x81`, `0xE0..0xEF`
+- Register windows:
+	- Lamp RAM `0x00..0x07`
+	- Switch bytes `0x40..0x43`
+	- Diagnostics `0xF0..0xF3`
 
 Constraints:
-- No firmware logic changes.
-- Keep this as documentation/navigation cleanup only.
-- Preserve the current repo split between Captain-Fantastic-home-edition and Development-Station-Power-Supply.
+- Keep matrix test logic segmented in `matrix_test_support.*` for easy removal later.
+- Update docs whenever behavior or mapping changes.
+- Preserve repo split between Captain and WorkStation projects.

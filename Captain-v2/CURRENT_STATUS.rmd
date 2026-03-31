@@ -1,71 +1,65 @@
 # Captain v2 Current Status
 
-Last updated: 2026-03-13
+Last updated: 2026-03-31
 
 ## Purpose
-This is the rolling handoff file for quick resume. Update this file after each meaningful firmware, wiring, or workflow change.
+Rolling status for quick resume of Captain-v2 development.
 
 ## Firmware Snapshot
-- Project folder: Captain-v2
-- Default environment: captain_control
-- Upload method in active use: USB serial on COM5
-- Attract loop: enabled
+- Shared source tree: `Captain-v2/`
+- Board-specific projects:
+	- `Captain-v2-control/`
+	- `Captain-v2-matrix/`
+- Current active development target: matrix board
 
-## Attract Timing (Current)
-- Total sweep: 1000 ms
-- Slot per lamp: 100 ms
-- Lamp ON: 50 ms
-- Lamp OFF: 50 ms
-- Laps: 1
+## Matrix Board Protocol Snapshot (Current)
+- I2C address: `0x24`
+- Command bytes:
+	- `0x20/0x21` system off/on
+	- `0x80/0x81` output off/on
+	- `0xE0..0xEF` pulse-width level (0..15)
+- Register windows:
+	- Lamp RAM `0x00..0x07`
+	- Switch bytes `0x40..0x43`
+	- Diagnostics `0xF0..0xF3`
+- Default pulse-width level: `4` (250 us row dwell)
 
-## Audio Bring-Up (Current)
-- I2S output path enabled on DIN=25, BCLK=14, LRCK=13.
-- Wiring note: suspected BCLK/LRCK crossing seen in probes, but swap is NOT committed as default until physical routing is confirmed.
-- Temporary bypass test: LRCK remapped to GPIO15 to avoid suspected GPIO13 signal-path failure.
-- Hardware isolation result: GPIO15 LRCK is clean at source; when jumpered onto the LRCK net tied to MAX98357 path, waveform collapses into spikes/noise.
-- Conclusion: LRCK net is being heavily loaded; most likely failed MAX98357 input stage or local board damage on that net.
-- Startup audio test sequence is enabled at boot.
-- Test pattern: 392 Hz, 523 Hz, 659 Hz, 784 Hz.
-- Pattern repeats: 2 passes.
-- Tone duration: 100 ms each.
-- Inter-tone gap: 35 ms.
-- Serial markers expected:
-	- Audio test: startup pattern begin
-	- Audio test: startup pattern complete
+## Matrix Test Segmentation
+- Test support module is isolated for easy removal:
+	- `include/matrix_test_support.h`
+	- `src/matrix_test_support.cpp`
+- Build flag in matrix project currently enables it:
+	- `CAPTAIN_MATRIX_TEST_SUPPORT=1`
 
-## Expected Boot Signatures
-- CAPTAIN_V2 setup start
-- Attract config: enabled=1 period=1000 minStep=20 laps=1
-- Attract timing: slot=100ms on=50ms off=50ms sweep=1000ms laps=1
+## Documentation Snapshot
+- Matrix firmware contract/datasheet doc:
+	- `../Captain-v2-matrix/README.md`
+- v2 overview doc:
+	- `README.md`
 
-## Known-Good Upload Command
+## Known-Good Build Baseline
 ```powershell
-cd "c:\Users\user\Esp32 projects VScode\Captain-Fantastic-home-edition\Captain-v2"
-C:\Users\user\.platformio\penv\Scripts\platformio.exe run -e captain_control -t upload --upload-port COM5
+cd "c:\Users\forch\VS Code github\Captain-Fantastic-home-edition\Captain-v2-matrix"
+C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_matrix
+
+cd "c:\Users\forch\VS Code github\Captain-Fantastic-home-edition\Captain-v2-control"
+C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_control
 ```
 
-## Known Issues
-1. Matrix I2C device at 0x24 has been missing in some boot sessions.
-2. Tilt input on GPIO34 is noisy/floating and can spam pressed/released logs.
-3. Root project upload task combined_rtos is not the preferred path for Captain-v2 control firmware.
+## Current Blockers / Watch Items
+1. Matrix upload/bench validation is pending until hardware flashing setup is available.
+2. Control-board and full-system integration should wait until matrix standalone validation is complete.
 
 ## Resume Checklist
-- [ ] Confirm folder is Captain-v2
-- [ ] Upload captain_control on COM5
-- [ ] Confirm monitor is not occupying COM5 during upload
-- [ ] Verify expected boot signature lines
-- [ ] Confirm attract sweep cadence on hardware
+- [ ] Open `Captain-v2-matrix/`
+- [ ] Upload matrix firmware
+- [ ] Verify I2C presence at `0x24`
+- [ ] Verify lamp RAM writes map correctly to board outputs
+- [ ] Verify switch bytes match physical switch closures
+- [ ] Verify diagnostics registers `0xF0..0xF3`
 
 ## Change Log
-- 2026-03-13: Created rolling status file from active session snapshot.
-- 2026-03-13: Added stable USB upload baseline for captain_control on COM5.
-- 2026-03-13: Recorded current attract timing target and known hardware watch items.
-- 2026-03-13: Added stronger sound-chip startup bring-up test pattern with serial start/complete markers.
-- 2026-03-13: Added firmware I2S diagnostics counters (tx calls/bytes/errors) to confirm ESP32 is transmitting audio data even if amp hardware is suspect.
-- 2026-03-13: Switched I2S audio output to explicit interleaved stereo frames (RIGHT_LEFT) so LRCLK must toggle during tone playback.
-- 2026-03-13: Confirmed effective BCLK/LRCK wiring mismatch by probe behavior; re-enabled firmware swap mode to match hardware.
-- 2026-03-13: Reverted swap to default OFF pending physical schematic/PCB confirmation; added compile-time override path.
-- 2026-03-13: Added GPIO-only pulse test mode and then moved LRCK to GPIO15 for bypass testing while keeping I2S mode active.
-- 2026-03-13: Confirmed clean GPIO15 signal degrades when tied to LRCK net, strongly indicating downstream hardware fault (likely MAX98357 damaged).
-- 2026-03-13: Installed LTspice and ran initial-state solenoid driver model in hw_sim. Result: control low is OFF (near-zero SD output), control high is strongly ON (~18V SD output in model).
-- 2026-03-13: Critical hardware event: BSS84 P-channel device (Q8 stage) smokes on power application. Power-up testing must remain disabled until driver path is isolated and repaired.
+- 2026-03-31: Added separate board-specific PlatformIO projects (`Captain-v2-control`, `Captain-v2-matrix`).
+- 2026-03-31: Migrated matrix/control link to register-style I2C protocol (HT16K33-like operation).
+- 2026-03-31: Added isolated matrix test support module and matrix diagnostics registers.
+- 2026-03-31: Added matrix datasheet-style firmware contract in `Captain-v2-matrix/README.md`.
