@@ -1,9 +1,9 @@
 #ifndef CAPTAIN_MAPPING_H
 #define CAPTAIN_MAPPING_H
 
-#include <Arduino.h>
+#include <stddef.h>
+#include <stdint.h>
 #include "captain_protocol.h"
-#include "headbox_595_config.h"
 
 constexpr uint8_t CAPTAIN_MATRIX_ROW_PINS[CAPTAIN_SWITCH_ROWS] = {3, 2, 11, 10, 8, 7, 6, 4};
 constexpr uint8_t CAPTAIN_MATRIX_SWITCH_COL_PINS[CAPTAIN_SWITCH_COLS] = {20, 21, 22, 23};

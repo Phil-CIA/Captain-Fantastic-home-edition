@@ -1,7 +1,7 @@
 #ifndef MATRIX_LAMP_DRIVER_CONFIG_H
 #define MATRIX_LAMP_DRIVER_CONFIG_H
 
-#include <Arduino.h>
+#include <stdint.h>
 
 constexpr int8_t CAPTAIN_MATRIX_SR_DATA_PIN = 2;
 constexpr int8_t CAPTAIN_MATRIX_SR_CLOCK_PIN = 12;

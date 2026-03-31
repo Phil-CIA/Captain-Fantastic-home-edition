@@ -1,7 +1,7 @@
 #ifndef I2C_BUS_CONFIG_H
 #define I2C_BUS_CONFIG_H
 
-#include <Arduino.h>
+#include <stdint.h>
 
 constexpr uint8_t CAPTAIN_I2C_SDA_PIN = 21;
 constexpr uint8_t CAPTAIN_I2C_SCL_PIN = 22;

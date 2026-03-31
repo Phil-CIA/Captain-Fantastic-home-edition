@@ -1,7 +1,8 @@
 #ifndef CAPTAIN_PROTOCOL_H
 #define CAPTAIN_PROTOCOL_H
 
-#include <Arduino.h>
+#include <stddef.h>
+#include <stdint.h>
 #include "i2c_bus_config.h"
 
 constexpr uint8_t CAPTAIN_SWITCH_ROWS = 8;
