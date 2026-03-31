@@ -14,12 +14,16 @@
    - docs/
 2. Captain-v2 split-MPU work
    - Captain-v2/
-3. Hardware assets
-   - hardware/kicad/esp32vroom/
-   - hardware/kicad/libs/
-   - hardware/gerbers/root-export-esp32vroom/
-   - hardware/gerbers/legacy-gerber-files/
-   - hardware/backups/esp32vroom-backups/
+3. Hardware assets (Captain v2 split-MPU)
+   - hardware/kicad/captain_control/ — Main control board schematic and PCB
+   - hardware/kicad/captain_matrix/ — Switch/lamp matrix board schematic and PCB
+   - hardware/kicad/7seg_display/ — Standalone 7-segment display board
+   - hardware/kicad/legacy/ — Hat board (old single-board design, superseded)
+   - hardware/kicad/esp32vroom/ — Original ESP32Vroom project (historical)
+   - hardware/kicad/libs/ — Shared KiCad symbols and footprints
+   - hardware/gerbers/root-export-esp32vroom/ — Legacy gerber exports
+   - hardware/gerbers/legacy-gerber-files/ — Older gerber exports
+   - hardware/backups/esp32vroom-backups/ — Historical hardware backups
 4. Archive material
    - archive/backups/
    - archive/battery-charger/

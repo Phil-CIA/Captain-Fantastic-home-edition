@@ -54,6 +54,19 @@ and bring-up checklist.  Source: `include/spi_handshake_config.h`,
 - Matrix lamp commands now drive real lamp outputs on matrix board via local `74HC595` (`DS=GPIO2`, `SHCP=GPIO12`, `STCP=GPIO4`)
 - Matrix switch labels for `Tilt` and `Start` are annotated as moved to direct GPIO inputs on control board
 
+## Hardware Design Files
+
+KiCad schematics and PCB layouts are organized under `../hardware/kicad/`:
+
+| Board | Location | PlatformIO env | Purpose |
+|-------|----------|-----------------|---------|
+| **Pinball Control board** | `../hardware/kicad/captain_control/` | `captain_control` | Main game controller |
+| **Pinball matrix board** | `../hardware/kicad/captain_matrix/` | `captain_matrix` | Playfield matrix scanner/lamp driver |
+| **7-segment display** | `../hardware/kicad/7seg_display/` | — | Standalone I2C HT16K33 score display |
+| **Hat board (legacy)** | `../hardware/kicad/legacy/` | — | Old single-board design (superseded v1) |
+
+See `../docs/` for hardware documentation, design notes, and integration guides.
+
 ## Next
 
 1. Replace placeholder pin maps in each `main` file.
