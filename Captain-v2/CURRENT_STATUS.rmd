@@ -1,65 +1,42 @@
 # Captain v2 Current Status
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 ## Purpose
-Rolling status for quick resume of Captain-v2 development.
+This is the rolling handoff file for quick resume. Update this file after each meaningful firmware, wiring, or workflow change.
 
 ## Firmware Snapshot
-- Shared source tree: `Captain-v2/`
-- Board-specific projects:
-	- `Captain-v2-control/`
-	- `Captain-v2-matrix/`
-- Current active development target: matrix board
+- Project folder: Captain-v2
+- Default environment: captain_matrix_c6_idf
+- Upload method in active use: UART serial on COM8
 
-## Matrix Board Protocol Snapshot (Current)
-- I2C address: `0x24`
-- Command bytes:
-	- `0x20/0x21` system off/on
-	- `0x80/0x81` output off/on
-	- `0xE0..0xEF` pulse-width level (0..15)
-- Register windows:
-	- Lamp RAM `0x00..0x07`
-	- Switch bytes `0x40..0x43`
-	- Diagnostics `0xF0..0xF3`
-- Default pulse-width level: `4` (250 us row dwell)
+## Matrix C6 Bring-Up (Current)
+- Board target: ESP32-C6 matrix board via ESP-IDF env `captain_matrix_c6_idf`.
+- Active serial path: external UART bridge on COM8.
+- Native USB note: GPIO12/GPIO13 are used by matrix hardware, so native USB-Serial/JTAG is not considered reliable on this board revision.
+- On-carrier boot status: restored and stable after removing the resistor path tying `Sw_Col_3` to GPIO9.
+- Active firmware mode: matrix switch-scan scaffold (no local shift-register driving in this board variant).
+- Current switch columns in scaffold: `Sw_Col0=GPIO20`, `Sw_Col1=GPIO19`, `Sw_Col2=GPIO18`, `Sw_Col3=GPIO23`.
 
-## Matrix Test Segmentation
-- Test support module is isolated for easy removal:
-	- `include/matrix_test_support.h`
-	- `src/matrix_test_support.cpp`
-- Build flag in matrix project currently enables it:
-	- `CAPTAIN_MATRIX_TEST_SUPPORT=1`
-
-## Documentation Snapshot
-- Matrix firmware contract/datasheet doc:
-	- `../Captain-v2-matrix/README.md`
-- v2 overview doc:
-	- `README.md`
-
-## Known-Good Build Baseline
+## Known-Good Upload Command
 ```powershell
-cd "c:\Users\forch\VS Code github\Captain-Fantastic-home-edition\Captain-v2-matrix"
-C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_matrix
-
-cd "c:\Users\forch\VS Code github\Captain-Fantastic-home-edition\Captain-v2-control"
-C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_control
+cd "C:\cfhe\Captain-v2"
+C:\Users\user\.platformio\penv\Scripts\platformio.exe run -e captain_matrix_c6_idf -t upload
 ```
 
-## Current Blockers / Watch Items
-1. Matrix upload/bench validation is pending until hardware flashing setup is available.
-2. Control-board and full-system integration should wait until matrix standalone validation is complete.
-
 ## Resume Checklist
-- [ ] Open `Captain-v2-matrix/`
-- [ ] Upload matrix firmware
-- [ ] Verify I2C presence at `0x24`
-- [ ] Verify lamp RAM writes map correctly to board outputs
-- [ ] Verify switch bytes match physical switch closures
-- [ ] Verify diagnostics registers `0xF0..0xF3`
+- [ ] Confirm folder is Captain-v2
+- [ ] Select env `captain_matrix_c6_idf`
+- [ ] Confirm upload/monitor on COM8
+- [ ] Ensure BOOT (GPIO9) is released for normal run (not ROM download)
+- [ ] Verify `captain_idf` boot/alive log lines and switch mask updates
 
 ## Change Log
-- 2026-03-31: Added separate board-specific PlatformIO projects (`Captain-v2-control`, `Captain-v2-matrix`).
-- 2026-03-31: Migrated matrix/control link to register-style I2C protocol (HT16K33-like operation).
-- 2026-03-31: Added isolated matrix test support module and matrix diagnostics registers.
-- 2026-03-31: Added matrix datasheet-style firmware contract in `Captain-v2-matrix/README.md`.
+- 2026-04-01: ESP-IDF migration scaffold added for Captain-v2 with dedicated C6 matrix env.
+- 2026-04-01: Established no-space build path (`C:\cfhe\Captain-v2`) for reliable ESP-IDF builds.
+- 2026-04-01: Stabilized UART bring-up on COM8 and documented UART-first workflow.
+- 2026-04-01: Confirmed connector orientation mismatch during probing; corrected hardware interpretation.
+- 2026-04-01: Confirmed root cause of download-mode lock: GPIO9 tied into `Sw_Col_3` via effective 2.2k pull-down.
+- 2026-04-01: Validated hardware workaround: removing `Sw_Col_3` resistor path restores normal `SPI_FAST_FLASH_BOOT`.
+- 2026-04-01: Converted active scaffold to matrix switch-scan only (no local shift-register outputs).
+- 2026-04-01: Remapped `Sw_Col_3` from GPIO9 to GPIO23 in active scaffold; GPIO9 kept unassigned.

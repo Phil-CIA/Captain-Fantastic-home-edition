@@ -21,6 +21,33 @@ The previous single-board design had switching-noise/ground-loop issues during a
 
 Edit COM ports in `platformio.ini` as needed.
 
+## UART Bring-Up Checklist (ESP32-C6 Matrix)
+
+Use this checklist for current matrix board revisions.
+
+1. Use `captain_matrix_c6_idf` environment.
+2. Connect through UART bridge on `COM8` (TX, RX, GND).
+3. Prefer UART port for flashing/monitoring; native USB is not the primary path on this board.
+4. Close any existing serial monitor before upload.
+5. Upload command:
+
+```powershell
+platformio run -e captain_matrix_c6_idf -t upload
+```
+
+6. Open monitor:
+
+```powershell
+platformio device monitor -p COM8 -b 115200
+```
+
+7. Expected success signature on reset:
+	- `boot:0x1c (SPI_FAST_FLASH_BOOT)`
+	- ESP-IDF bootloader lines
+	- `app_init: Project name: Captain-v2`
+
+8. If monitor says `waiting for download`, verify BOOT/GPIO9 is not asserted and ensure only one tool has COM8 open.
+
 ## SPI Handshake (display link)
 
 Two extra GPIO lines added to the IDC ribbon between host and display ESP32-C6

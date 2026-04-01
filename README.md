@@ -26,6 +26,8 @@ This repo contains **multiple PlatformIO projects**:
 - `Captain-v2/platformio.ini`
 - Shared build definitions and source for split-MPU firmware
 - Includes environments for control, matrix, and display-link variants
+- Active bring-up environment: `captain_matrix_c6_idf` (ESP32-C6 matrix board on COM8)
+- Separates control logic and switch/lamp matrix scanning across two ESP32 boards
 
 ### 3. Captain v2 board-specific projects
 - `Captain-v2-control/platformio.ini` (control board focused project)

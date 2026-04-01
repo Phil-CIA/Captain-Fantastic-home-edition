@@ -2,6 +2,30 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Captain-v2: Build (captain_matrix_c6_idf)",
+      "type": "shell",
+      "command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_matrix_c6_idf"
+      ],
+      "group": "build"
+    },
+    {
+      "label": "Captain-v2: Upload (captain_matrix_c6_idf)",
+      "type": "shell",
+      "command": "C:/Users/user/.platformio/penv/Scripts/platformio.exe",
+      "args": [
+        "run",
+        "-e",
+        "captain_matrix_c6_idf",
+        "-t",
+        "upload"
+      ],
+      "group": "build"
+    },
+    {
       "label": "Captain-v2: Build (captain_control)",
       "type": "shell",
       "command": "${env:USERPROFILE}/.platformio/penv/Scripts/platformio.exe",
