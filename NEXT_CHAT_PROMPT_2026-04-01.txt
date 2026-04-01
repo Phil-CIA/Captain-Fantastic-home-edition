@@ -1,0 +1,33 @@
+Continue from `END_OF_DAY_HANDOFF_2026-03-31.rmd`.
+
+Use `Captain-v2-matrix/` as the active project.
+
+Immediate goal:
+- Power up the matrix board and perform first real hardware verification of the ESP32-C6 firmware.
+
+Do this first:
+1. Build and upload the `captain_matrix_idf` environment.
+2. Verify the board is alive on serial.
+3. Verify I2C address `0x24`.
+4. Test command bytes `0x21`, `0x81`, and `0xE0..0xEF`.
+5. Test register windows:
+   - lamp RAM `0x00..0x07`
+   - switch RAM `0x40..0x43`
+   - diagnostics `0xF0..0xF3`
+6. Document any row/column, polarity, timing, or wiring mismatches before editing code.
+7. Add any redesign findings to `docs/NEXT_ITERATION_RECOMMENDATIONS.md`.
+
+Pin-sharing note to verify on hardware (FW-001):
+- GPIO2 is shared between matrix row 1 drive and the 74HC595 DS (DATA) pin.
+- GPIO4 is shared between matrix row 7 drive and the 74HC595 STCP (LATCH) pin.
+- During every shift-register write, GPIO4 (LATCH) briefly goes LOW then HIGH, which also
+  briefly activates row 7 before the intended row is activated. This pre-pulse carries the
+  column data from the previous refresh cycle and is shorter than the 250 us row dwell.
+- Observe row 7 lamps during normal operation. If visible ghosting occurs on row 7,
+  add this as a firmware fix item and a hardware pin-assignment redesign item.
+- See `docs/NEXT_ITERATION_RECOMMENDATIONS.md` for the canonical parking lot.
+
+Key references:
+- `Captain-v2-matrix/README.md`
+- `docs/NEXT_ITERATION_RECOMMENDATIONS.md`
+- `README.md`

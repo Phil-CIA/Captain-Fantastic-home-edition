@@ -59,6 +59,8 @@ C:\Users\forch\.platformio\penv\Scripts\platformio.exe run -e captain_control
 - [ ] Verify diagnostics registers `0xF0..0xF3`
 
 ## Change Log
+- 2026-04-01: Session resumed from 2026-03-31 handoff. Hardware validation of matrix board is the active goal.
+- 2026-04-01: Identified GPIO2/GPIO4 pin-sharing side-effect to verify during bench testing (see FW-001 in `NEXT_CHAT_PROMPT_2026-04-01.txt` and `docs/NEXT_ITERATION_RECOMMENDATIONS.md`).
 - 2026-03-31: Added separate board-specific PlatformIO projects (`Captain-v2-control`, `Captain-v2-matrix`).
 - 2026-03-31: Migrated matrix/control link to register-style I2C protocol (HT16K33-like operation).
 - 2026-03-31: Added isolated matrix test support module and matrix diagnostics registers.
