@@ -1,0 +1,103 @@
+# End Of Day Handoff - 2026-04-01
+
+## Current Restart Point
+
+This session started from `END_OF_DAY_HANDOFF_2026-03-31.rmd`.
+
+The immediate problem was that the ESP32-C6 DevKitC-1 did not appear as a
+COM port after being plugged into USB.  Documentation and a platformio.ini
+update were added to address this.  The matrix board firmware itself was not
+changed.
+
+---
+
+## What Was Done In This Session
+
+### Problem Solved: ESP32-C6 not showing as COM port
+
+Added two new documents and updated the matrix board project configuration:
+
+1. **`docs/ESP32C6_USB_DRIVER_SETUP.md`**
+   - Explains why the COM port does not appear (missing USB-UART bridge driver).
+   - Covers both CP2102N (Silicon Labs CP210x) and CH340/CH341 (WCH) bridge chips.
+   - Includes Device Manager VID/PID table to identify the chip.
+   - Step-by-step driver download and install instructions.
+   - Troubleshooting section: charge-only cable, port disappearing, access denied.
+   - Linux/macOS quick reference.
+
+2. **`Captain-v2-matrix/FLASHING_NOTES.md`**
+   - Links to the USB driver setup guide.
+   - Step-by-step: build, upload, serial monitor verification.
+   - How to force download mode (hold BOOT + press EN).
+   - Strapping pin warning (GPIO8/GPIO9 — do not drive externally).
+   - I2C address verification procedure.
+   - Serial test command reference.
+   - Bench verification checklist.
+
+3. **`Captain-v2-matrix/platformio.ini`**
+   - Added `upload_protocol = esptool` (was implicit; now explicit).
+   - Added `monitor_dtr = 0` and `monitor_rts = 0` for correct auto-reset.
+   - Added commented-out `upload_port` / `monitor_port` lines with instructions.
+   - Added block comment explaining how to fix the COM port issue.
+
+---
+
+## Immediate Next Steps (Pick Up Here)
+
+### Before anything else: get the COM port working
+
+1. Open **Device Manager** on the Windows machine.
+2. Look in **Other Devices** or **Ports (COM & LPT)** for the ESP32-C6 entry.
+3. Right-click → Properties → Hardware Ids → note the VID:PID.
+4. Follow `docs/ESP32C6_USB_DRIVER_SETUP.md` to install the correct driver.
+5. Re-plug the cable.  A `COMx` entry should now appear under **Ports**.
+
+### Once COM port is visible: flash and verify the matrix board
+
+Continue the bench verification checklist from the previous handoff:
+
+1. Open `Captain-v2-matrix/` in PlatformIO / VS Code.
+2. Build and upload: `pio run -e captain_matrix_idf -t upload`
+3. Open serial monitor: `pio device monitor -b 115200`
+4. Confirm boot log appears.
+5. Confirm I2C at `0x24`.
+6. Test commands `0x21`, `0x81`, and `0xE0..0xEF`.
+7. Test lamp RAM `0x00..0x07`, switch bytes `0x40..0x43`, diagnostics `0xF0..0xF3`.
+8. Document any mismatches in `docs/NEXT_ITERATION_RECOMMENDATIONS.md` before
+   changing firmware.
+
+---
+
+## Known Open Items (Unchanged from Previous Handoff)
+
+1. Real hardware validation is still pending.
+2. Flash-size / target consistency should be confirmed during bench testing.
+3. Old Arduino-style test-console parity has not been fully ported into the
+   IDF path.
+4. High-side rail reduction remains the preferred next hardware iteration item
+   for the redesign parking lot.
+
+---
+
+## Documents To Keep Open
+
+1. `docs/ESP32C6_USB_DRIVER_SETUP.md`  ← new — start here for the COM port issue
+2. `Captain-v2-matrix/FLASHING_NOTES.md`  ← new — step-by-step flash guide
+3. `Captain-v2-matrix/README.md`
+4. `docs/NEXT_ITERATION_RECOMMENDATIONS.md`
+5. `README.md`
+
+---
+
+## Recommended Next Chat Prompt
+
+Continue from `END_OF_DAY_HANDOFF_2026-04-01.rmd`.
+
+The ESP32-C6 COM port issue is now documented in
+`docs/ESP32C6_USB_DRIVER_SETUP.md`.  Install the correct USB bridge driver
+(CP210x or CH340 — check Device Manager VID:PID), then use
+`Captain-v2-matrix/FLASHING_NOTES.md` to build and upload the
+`captain_matrix_idf` environment.  Follow the bench verification checklist in
+that file to confirm the board is alive on serial, visible at I2C address
+`0x24`, and that lamp RAM, switch bytes, and diagnostics registers all behave
+as documented in `Captain-v2-matrix/README.md`.
