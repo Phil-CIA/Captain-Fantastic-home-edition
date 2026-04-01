@@ -162,6 +162,7 @@ Wire.requestFrom(0x24, 4);
 4. Toggle physical switches and verify switch bytes (`0x40..0x43`) change.
 5. Sweep pulse level (`0xE0..0xEF`) and verify visible/intensity timing behavior.
 6. Read diagnostics (`0xF0..0xF3`) and confirm status bits/values.
+7. Observe row 7 lamps specifically for ghosting during normal lamp refresh (see section 12).
 
 ## 11. Recommended Hardware Iteration (March 2026)
 
@@ -181,3 +182,30 @@ Cross-reference:
 - Canonical redesign parking lot: `docs/NEXT_ITERATION_RECOMMENDATIONS.md`.
 - Next-iteration handoff prompt: `NEXT_CHAT_PROMPT_2026-03-26.txt`.
 - Top-level status summary: `README.md` (Current Development Focus).
+
+## 12. GPIO Pin-Sharing Observation (April 2026)
+
+**Background:**
+GPIO2 and GPIO4 are each assigned to two roles:
+
+| GPIO | Role A (row matrix) | Role B (74HC595 SR) |
+|------|---------------------|----------------------|
+| GPIO2 | Row driver 1 (active LOW) | DS — serial data input |
+| GPIO4 | Row driver 7 (active LOW) | STCP — storage/latch clock |
+
+**Side-effect to verify:**
+Every call to `writeShiftRegister16` begins by setting GPIO4 (LATCH) LOW, which also briefly activates row 7. After the 16 shift-clock pulses complete, GPIO4 goes HIGH (latching the new column data), and row 7 deactivates again. This pre-pulse on row 7 carries the column data from the *previous* refresh cycle and lasts for approximately the SR write time (~1–5 µs), which is much shorter than the 250 µs row dwell at the default pulse level.
+
+**What to check on the bench:**
+- With lamps active, observe row 7 lamps. If ghosting or double-brightness is visible, the pre-pulse is long enough to matter.
+- With lamps all OFF (lamp RAM = 0), observe if row 7 lamps flicker due to residual data from a previous write.
+
+**Firmware mitigation (if needed):**
+Write a blank SR value (`writeShiftRegister16(0)`) immediately before writing the real column data in `refreshLampMatrixStep`. This changes the pre-pulse on row 7 from carrying previous column data to carrying all-OFF data, eliminating any spurious lamp activation.
+
+**Hardware redesign path (if needed):**
+Reassign the 74HC595 DATA and LATCH pins to GPIOs not shared with any row driver in the next board revision.
+
+Cross-reference:
+- `docs/NEXT_ITERATION_RECOMMENDATIONS.md` item HW-002.
+- `Captain-v2-matrix/src/matrix_app_main.cpp` — `writeShiftRegister16`, `refreshLampMatrixStep`.
