@@ -1,0 +1,28 @@
+Continue from `END_OF_DAY_HANDOFF_2026-04-01.rmd`.
+
+The ESP32-C6 DevKitC-1 was not showing as a COM port.  That issue is now
+documented.
+
+Do this first — fix the COM port:
+1. Open Device Manager on Windows.
+2. Find the unknown/yellow-triangle USB entry (may be under "Other Devices").
+3. Right-click → Properties → Details → Hardware Ids.
+4. Note the VID:PID (10C4:EA60 = CP2102N, 1A86:7523 = CH340).
+5. Follow docs/ESP32C6_USB_DRIVER_SETUP.md to install the correct driver.
+6. Re-plug the USB cable — a COMx entry should now appear under Ports.
+
+Then flash and verify the matrix board:
+1. Open Captain-v2-matrix/ in PlatformIO.
+2. Build and upload: pio run -e captain_matrix_idf -t upload
+3. Monitor: pio device monitor -b 115200
+4. Confirm startup log, I2C address 0x24, and register behavior.
+5. Use FLASHING_NOTES.md bench checklist to verify lamp RAM, switch bytes,
+   diagnostics, and pulse-width sweep.
+6. Log any mismatches in docs/NEXT_ITERATION_RECOMMENDATIONS.md before
+   changing firmware.
+
+Key references:
+- docs/ESP32C6_USB_DRIVER_SETUP.md  (COM port fix)
+- Captain-v2-matrix/FLASHING_NOTES.md  (flash and verify steps)
+- Captain-v2-matrix/README.md  (protocol specification)
+- docs/NEXT_ITERATION_RECOMMENDATIONS.md  (redesign parking lot)
