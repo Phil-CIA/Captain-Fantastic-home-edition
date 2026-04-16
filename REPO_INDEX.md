@@ -12,6 +12,7 @@
    - include/
    - data/
    - docs/
+   - docs/SYSTEM_BEHAVIOR_CONTRACT.md — working definition doc for state machine, scoring, audio, diagnostics, and pending design decisions
 2. Captain-v2 split-MPU work
    - Captain-v2/
    - Captain-v2-control/
