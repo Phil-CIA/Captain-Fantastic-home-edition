@@ -13,6 +13,7 @@
 #include "external_flash_config.h"
 #include "ota_config.h"
 #include "headbox_attract_config.h"
+#include "headbox_595_config.h"
 #include "displays.h"
 
 namespace {
@@ -21,6 +22,8 @@ constexpr uint32_t DIRECT_INPUT_POLL_MS = 5;
 constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
 constexpr uint8_t HEARTBEAT_PIN = 2;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
+constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
+constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 
 uint32_t displayScore = 0;
 uint32_t lastDisplayUpdate = 0;
@@ -52,26 +55,51 @@ bool otaVisualState = false;
 uint32_t lastHeadboxAttractStepMs = 0;
 uint8_t headboxAttractStep = 0;
 bool matrixDeviceReady = false;
+uint32_t lastMatrixGoodTransactionMs = 0;
+uint32_t lastMatrixDiagPollMs = 0;
+bool matrixLinkFaulted = false;
 
 void updateHeadboxLamps(uint16_t pattern);
+
+void recordMatrixTransactionResult(bool ok) {
+    const uint32_t now = millis();
+    if (ok) {
+        lastMatrixGoodTransactionMs = now;
+        if (matrixLinkFaulted) {
+            matrixLinkFaulted = false;
+            Serial.println("Matrix link recovered");
+        }
+        return;
+    }
+
+    if (!matrixLinkFaulted && lastMatrixGoodTransactionMs != 0 && (now - lastMatrixGoodTransactionMs) >= MATRIX_LINK_TIMEOUT_MS) {
+        matrixLinkFaulted = true;
+        Serial.println("Matrix link fault: transaction timeout exceeded 1000 ms safe window");
+    }
+}
 
 bool matrixWriteCommandByte(uint8_t value) {
     Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
     Wire.write(value);
-    return Wire.endTransmission() == 0;
+    const bool ok = Wire.endTransmission() == 0;
+    recordMatrixTransactionResult(ok);
+    return ok;
 }
 
 bool matrixWriteRegisters(uint8_t startRegister, const uint8_t* data, size_t len) {
     Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
     Wire.write(startRegister);
     Wire.write(data, len);
-    return Wire.endTransmission() == 0;
+    const bool ok = Wire.endTransmission() == 0;
+    recordMatrixTransactionResult(ok);
+    return ok;
 }
 
 bool matrixReadRegisters(uint8_t startRegister, uint8_t* out, size_t len) {
     Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
     Wire.write(startRegister);
     if (Wire.endTransmission(false) != 0) {
+        recordMatrixTransactionResult(false);
         return false;
     }
 
@@ -80,12 +108,14 @@ bool matrixReadRegisters(uint8_t startRegister, uint8_t* out, size_t len) {
         while (Wire.available()) {
             Wire.read();
         }
+        recordMatrixTransactionResult(false);
         return false;
     }
 
     for (size_t index = 0; index < len; index++) {
         out[index] = static_cast<uint8_t>(Wire.read());
     }
+    recordMatrixTransactionResult(true);
     return true;
 }
 
@@ -96,6 +126,8 @@ void initMatrixDevice() {
     matrixDeviceReady = pulseOk && systemOk && outputOk;
 
     if (matrixDeviceReady) {
+        lastMatrixGoodTransactionMs = millis();
+        matrixLinkFaulted = false;
         Serial.printf("Matrix device ready at 0x%02X (pulseLevel=%u)\n",
                       CAPTAIN_MATRIX_I2C_ADDRESS,
                       static_cast<unsigned>(CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL));
@@ -534,6 +566,10 @@ void initSolenoids() {
 }
 
 void fireSolenoid(CaptainSolenoidId solenoidId) {
+    if (matrixLinkFaulted) {
+        return;
+    }
+
     if (solenoidId >= SOLENOID_COUNT) {
         return;
     }
@@ -716,7 +752,11 @@ bool readMatrixSwitches(uint8_t* switchBits) {
     return matrixReadRegisters(CAPTAIN_MATRIX_REG_SWITCH_BASE, switchBits, CAPTAIN_SWITCH_BYTES);
 }
 
-void writeMatrixCommand() {
+bool readMatrixDiagnostics(uint8_t* diagBytes) {
+    return matrixReadRegisters(CAPTAIN_MATRIX_REG_DIAG_BASE, diagBytes, CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1);
+}
+
+bool writeMatrixCommand() {
     uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
     lampRows[1] |= captainMatrixLampRowMask(1);
     lampRows[2] |= captainMatrixLampRowMask(1);
@@ -733,6 +773,8 @@ void writeMatrixCommand() {
     if (!writeOk) {
         matrixDeviceReady = false;
     }
+
+    return writeOk;
 }
 
 void updateHeadboxLamps(uint16_t pattern) {
@@ -876,14 +918,30 @@ void loop() {
                 initMatrixDevice();
             }
 
-            writeMatrixCommand();
+            const bool writeOk = writeMatrixCommand();
 
             uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
-            if (readMatrixSwitches(switchBits)) {
+            const bool readOk = readMatrixSwitches(switchBits);
+            if (writeOk && readOk && !matrixLinkFaulted) {
                 handleSwitchEdges(switchBits);
                 matrixDeviceReady = true;
             } else {
                 matrixDeviceReady = false;
+            }
+
+            if (now - lastMatrixDiagPollMs >= MATRIX_DIAG_POLL_MS) {
+                lastMatrixDiagPollMs = now;
+                uint8_t diagBytes[CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1] = {};
+                if (readMatrixDiagnostics(diagBytes)) {
+                    const uint8_t status = diagBytes[0];
+                    const bool systemEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_SYSTEM_ENABLED) != 0;
+                    const bool outputEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_OUTPUT_ENABLED) != 0;
+                    if (!systemEnabled || !outputEnabled) {
+                        Serial.printf("Matrix diag warning: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
+                    }
+                } else {
+                    matrixDeviceReady = false;
+                }
             }
 
             const bool blink = ((now / 350) % 2) != 0;

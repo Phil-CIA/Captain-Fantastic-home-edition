@@ -9,9 +9,12 @@
 namespace {
 constexpr uint16_t MATRIX_LAMP_PULSE_MIN_US = 50;
 constexpr uint16_t MATRIX_LAMP_PULSE_STEP_US = 50;
+constexpr uint8_t MATRIX_SWITCH_DEBOUNCE_TICKS = 4;
 
 uint8_t lampRowRam[CAPTAIN_LAMP_ROWS] = {};
 uint8_t switchStateBytes[CAPTAIN_SWITCH_BYTES] = {};
+uint8_t debounceCandidateBits[CAPTAIN_SWITCH_BYTES] = {};
+uint8_t debounceTickCounters[CAPTAIN_SWITCH_ROWS * CAPTAIN_SWITCH_COLS] = {};
 uint8_t registerPointer = CAPTAIN_MATRIX_REG_SWITCH_BASE;
 uint8_t lampPulseWidthLevel = CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL;
 bool matrixSystemEnabled = false;
@@ -179,9 +182,12 @@ void onI2CRequest() {
 }
 
 void scanSwitchMatrix() {
-    memset(switchStateBytes, 0, sizeof(switchStateBytes));
+    uint8_t sampleBits[CAPTAIN_SWITCH_BYTES] = {};
 
     if (!matrixSystemEnabled) {
+        memset(switchStateBytes, 0, sizeof(switchStateBytes));
+        memset(debounceCandidateBits, 0, sizeof(debounceCandidateBits));
+        memset(debounceTickCounters, 0, sizeof(debounceTickCounters));
         return;
     }
 
@@ -194,7 +200,37 @@ void scanSwitchMatrix() {
 
         for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
             const bool closed = digitalRead(CAPTAIN_MATRIX_SWITCH_COL_PINS[col]) == LOW;
-            captainSetBit(switchStateBytes, captainSwitchBitIndex(row, col), closed);
+            captainSetBit(sampleBits, captainSwitchBitIndex(row, col), closed);
+        }
+    }
+
+    for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
+        for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
+            const size_t bitIndex = captainSwitchBitIndex(row, col);
+            const bool sampleClosed = captainGetBit(sampleBits, bitIndex);
+            const bool stableClosed = captainGetBit(switchStateBytes, bitIndex);
+
+            if (sampleClosed == stableClosed) {
+                debounceTickCounters[bitIndex] = 0;
+                captainSetBit(debounceCandidateBits, bitIndex, stableClosed);
+                continue;
+            }
+
+            const bool candidateClosed = captainGetBit(debounceCandidateBits, bitIndex);
+            if (sampleClosed != candidateClosed) {
+                captainSetBit(debounceCandidateBits, bitIndex, sampleClosed);
+                debounceTickCounters[bitIndex] = 1;
+                continue;
+            }
+
+            if (debounceTickCounters[bitIndex] < 255) {
+                debounceTickCounters[bitIndex]++;
+            }
+
+            if (debounceTickCounters[bitIndex] >= MATRIX_SWITCH_DEBOUNCE_TICKS) {
+                captainSetBit(switchStateBytes, bitIndex, sampleClosed);
+                debounceTickCounters[bitIndex] = 0;
+            }
         }
     }
 }
