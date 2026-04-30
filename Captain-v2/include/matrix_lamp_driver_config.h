@@ -3,9 +3,10 @@
 
 #include <stdint.h>
 
-constexpr int8_t CAPTAIN_MATRIX_SR_DATA_PIN = 2;
-constexpr int8_t CAPTAIN_MATRIX_SR_CLOCK_PIN = 12;
-constexpr int8_t CAPTAIN_MATRIX_SR_LATCH_PIN = 4;
+constexpr int8_t CAPTAIN_MATRIX_SR_DATA_PIN = 15;
+constexpr int8_t CAPTAIN_MATRIX_SR_CLOCK_PIN = 22;
+constexpr int8_t CAPTAIN_MATRIX_SR_LATCH_PIN = 23;
+constexpr int8_t CAPTAIN_MATRIX_SR_OE_N_PIN = 10;
 
 constexpr uint8_t CAPTAIN_MATRIX_SR_BIT_LAMP_COL0 = 0;
 constexpr uint8_t CAPTAIN_MATRIX_SR_BIT_LAMP_COL1 = 1;

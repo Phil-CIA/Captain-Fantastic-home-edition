@@ -16,19 +16,25 @@ The board presents itself on I2C like a peripheral IC (HT16K33-style behavior):
 
 ### I2C Interface
 - Slave address: `0x24`
-- SDA: GPIO16
-- SCL: GPIO17
+- SDA: GPIO2
+- SCL: GPIO3
 - Bus speed: 100 kHz
 
 ### Matrix Signals
-- Row drivers (8): GPIO3, GPIO2, GPIO11, GPIO10, GPIO8, GPIO7, GPIO6, GPIO4
-- Switch columns (4 inputs): GPIO20, GPIO21, GPIO22, GPIO23
+- Switch columns (4 inputs): GPIO18, GPIO19, GPIO20, GPIO21
+
+Rows are driven through the 74HC595 chain (not direct MCU row GPIOs).
 
 ### Lamp Shift Registers (74HC595 chain)
-- DATA (DS): GPIO2
-- CLOCK (SHCP): GPIO12
-- LATCH (STCP): GPIO4
+- DATA (DS): GPIO15 (`S_Data`)
+- CLOCK (SHCP): GPIO22 (`S_CLK`)
+- LATCH (STCP): GPIO23 (`S_latch`)
+- OE# enable: GPIO10 (`SR_/OE`, active-low)
 - Lamp columns mapped to SR bits 0..4
+
+### Matrix OLED (diagnostic)
+- Software I2C SDA: GPIO7
+- Software I2C SCL: GPIO6
 
 ## 3. Functional Model
 

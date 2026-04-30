@@ -1,0 +1,27 @@
+Continue from `END_OF_DAY_HANDOFF_2026-04-30.rmd`.
+
+Use these active projects:
+- `Captain-v2-matrix/`
+- `Captain-Fantastic-Control-and-Hat-Board/firmware/control-board/`
+
+Primary goal:
+- find why column driver stage is not conducting even though shift-register signaling and matrix lamp RAM updates are active.
+
+Start here:
+1. Build/upload matrix `captain_matrix_idf` to COM4.
+2. Confirm matrix alive logs still show changing `lamp=[..]` bytes.
+3. Run logic analyzer capture with:
+   - `S_CLK`, `S_latch`, `S_Data`, `SR_/OE`
+   - plus one U4 row output and one U5 column output.
+4. Verify exactly 16 clocks per latch frame and expected byte handoff across the daisy chain.
+5. Probe one column-driver input/output pair and determine where conduction stops.
+6. If necessary, test mapping controls one at a time in `matrix_app_main.cpp`:
+   - `MATRIX_SR_CHAIN_IS_COL_THEN_ROW`
+   - `MATRIX_SR_COL_ACTIVE_LOW`
+   - `MATRIX_SR_ROW_ACTIVE_LOW`
+7. If digital logic is correct but no conduction, proceed hardware-only debug (driver transistor stage / lamp path).
+
+Secondary goal:
+- if needed, rebuild/flash control `captain_control_test` on COM5 and verify matrix lamp intent from `matrix proto status`.
+
+Keep docs updated as decisions are validated.

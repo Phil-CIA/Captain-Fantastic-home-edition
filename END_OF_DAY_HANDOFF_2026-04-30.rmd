@@ -1,0 +1,90 @@
+# End Of Day Handoff - 2026-04-30
+
+## Current Restart Point
+
+Matrix bring-up is now on the correct hardware map and protocol path is confirmed alive.
+
+Control-to-matrix lamp intents are being received and decoded on the matrix board.
+
+## Active Project For Next Session
+
+Use:
+- `Captain-v2-matrix/`
+- `Captain-Fantastic-Control-and-Hat-Board/firmware/control-board/`
+
+PlatformIO environments:
+- Matrix: `captain_matrix_idf`
+- Control: `captain_control_test`
+
+Hardware ports used today:
+- Matrix: COM4
+- Control: COM5
+
+## What Was Completed Today
+
+1. Recovered matrix runtime stability (task watchdog starvation eliminated).
+2. Added clearer matrix heartbeat diagnostics (`lamp=[..]`) to verify live lamp RAM content.
+3. Confirmed protocol activity from control to matrix:
+   - `system=1`
+   - `output=1`
+   - lamp bytes changing over time.
+4. Aligned matrix firmware to current schematic nets:
+   - I2C slave on GPIO2/GPIO3
+   - switch columns on GPIO18..GPIO21
+   - shift-register control on GPIO15/22/23
+   - `SR_/OE` on GPIO10.
+5. Moved row driving to shift-register frame path (instead of direct row GPIO drive).
+6. Re-enabled matrix OLED diagnostics after row-driving conflict was removed.
+7. Added bench-tunable shift-register mapping controls in firmware:
+   - chain order selector
+   - row active polarity selector
+   - column active polarity selector.
+
+## High-Signal Evidence Captured
+
+1. Matrix logs showed rolling lamp data while alive:
+   - examples like `lamp=[00,00,00,00,02]`, `lamp=[02,00,00,00,00]`, `lamp=[00,02,00,00,00]`.
+2. Logic analyzer showed expected `S_CLK`, `S_latch`, `S_Data`, and `SR_/OE` behavior.
+3. Despite valid digital signaling, user reports column-driver stage does not appear to conduct.
+
+## Current Most Likely Fault Domain
+
+Firmware is now likely not the primary blocker.
+
+Most probable remaining issue is hardware polarity/drive behavior at or after the 74HC595 output stage:
+- column-driver polarity mismatch,
+- stage enable gating,
+- transistor-level conduction path,
+- or downstream lamp supply/sink path.
+
+## Immediate Goal For Tomorrow
+
+Confirm where conduction stops between shift-register outputs and actual column-driver switching.
+
+## Tomorrow Bench Checklist (in order)
+
+1. Confirm one full shift frame has exactly 16 clocks per latch.
+2. Probe daisy-chain handoff:
+   - U4 Q7S -> U5 DS relationship.
+3. Probe one row output from the row register and one column output from the column register for the same frame.
+4. Probe one column-driver input and its output node to verify conduction transition.
+5. Verify `SR_/OE` stays low during operation.
+6. If needed, flip firmware mapping toggles one at a time:
+   - `MATRIX_SR_CHAIN_IS_COL_THEN_ROW`
+   - `MATRIX_SR_COL_ACTIVE_LOW`
+   - `MATRIX_SR_ROW_ACTIVE_LOW`
+7. If logic is correct but no conduction, continue hardware-only debug at transistor/driver stage.
+
+## Notes For Control Board
+
+Control TEST profile includes deterministic matrix lamp blinking behavior.
+
+If control rebuild is interrupted, app-only flash to COM5 at `0x10000` is the fastest robust path.
+
+## Key Files To Keep Open
+
+1. `Captain-v2-matrix/src/matrix_app_main.cpp`
+2. `Captain-v2/include/captain_mapping.h`
+3. `Captain-v2/include/matrix_lamp_driver_config.h`
+4. `Captain-v2-matrix/README.md`
+5. `NEXT_CHAT_PROMPT_2026-04-30.txt`
