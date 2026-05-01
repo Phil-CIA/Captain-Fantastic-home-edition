@@ -1,0 +1,35 @@
+Continue from `END_OF_DAY_HANDOFF_2026-05-01.rmd`.
+
+Active project:
+- `Captain-v2-matrix/`
+
+Use bare-bones path first:
+- Environment: `captain_matrix_idf_barebones`
+- File: `Captain-v2-matrix/src/matrix_barebones_main.cpp`
+- Review guide: `Captain-v2-matrix/BAREBONES_TEST_PROGRAM.md`
+
+Current priority:
+- recover deterministic single-column selection without triggering whole-row conduction.
+
+Hard safety rules:
+1. Start with lamp rail disconnected.
+2. Keep `TEST_ENABLE_OUTPUTS=false` until logic-only checks are complete.
+3. Use bounded short output windows only.
+4. Reconnect lamp rail only for brief observation windows.
+5. If multiple lamps in a row energize together, cut power immediately and return to lockout.
+
+Known key finding from last session:
+- whole-row activation can heat/trip the 1.85 A polyfuse on the current lamp rail, so high-energy continuous tests are not acceptable.
+
+First actions next chat:
+1. Confirm lockout image is flashed and no lamp output occurs with rail disconnected.
+2. Reconnect LA and validate SR frame behavior for one selected row/column.
+3. Perform one bounded arm test and capture outcome as one of:
+   - single lamp only
+   - row burst
+   - no lamp
+4. Apply exactly one mapping/polarity change at a time and repeat.
+
+Reminder:
+- For ESP-IDF in this repo, do not rely on PlatformIO `src_filter` to choose sources.
+- Source selection is controlled via `src/CMakeLists.txt` and `CAPTAIN_MATRIX_BAREBONES` macro.

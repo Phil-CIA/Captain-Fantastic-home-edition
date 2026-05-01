@@ -1,0 +1,76 @@
+# End Of Day Handoff - 2026-05-01
+
+## Current Restart Point
+
+Matrix bring-up moved to a stripped bare-bones firmware track to isolate SR row/column behavior.
+
+Safety constraints now dominate workflow due to repeated whole-row activation and polyfuse heating on live lamp rail.
+
+## Active Project For Next Session
+
+Use:
+- `Captain-v2-matrix/`
+
+Primary PlatformIO environments:
+- Main runtime: `captain_matrix_idf`
+- Bare-bones test: `captain_matrix_idf_barebones`
+
+Hardware port used today:
+- Matrix board: COM4
+
+## What Was Completed Today
+
+1. Added a dedicated bare-bones test entrypoint:
+   - `Captain-v2-matrix/src/matrix_barebones_main.cpp`
+2. Added a dedicated bare-bones PlatformIO environment and made source selection deterministic for ESP-IDF:
+   - `Captain-v2-matrix/platformio.ini`
+   - `Captain-v2-matrix/src/CMakeLists.txt`
+   - compile-time macro `CAPTAIN_MATRIX_BAREBONES`
+3. Added source gating so bare-bones and full runtime do not both define `app_main`:
+   - `Captain-v2-matrix/src/matrix_app_main.cpp`
+   - `Captain-v2-matrix/src/matrix_barebones_main.cpp`
+4. Confirmed bare-bones environment builds and uploads to COM4.
+5. Added hard safety lockout in bare-bones (`TEST_ENABLE_OUTPUTS=false`) so OE# remains disabled by default.
+6. Wrote dedicated documentation for bare-bones file review:
+   - `Captain-v2-matrix/BAREBONES_TEST_PROGRAM.md`
+7. Updated matrix README with current May 2026 status and safety-first flow.
+
+## Critical Bench Findings
+
+1. Under multiple test variants, row selection appeared active while column selection could collapse into whole-row activation.
+2. With lamp rail connected (about 18V rail), whole-row activation caused high current and heated/tripped the 1.85 A polyfuse.
+3. User repeatedly shut power down correctly when unsafe behavior appeared.
+4. With lockout image active and lamp rail disconnected, system is stable (no lamp outputs active).
+
+## Current Safety State
+
+- Current intended safe baseline in bare-bones:
+  - `TEST_ENABLE_OUTPUTS=false`
+- This forces output lockout and prevents automatic lamp conduction.
+
+## Current Most Likely Fault Domain
+
+- Remaining blocker is not scheduler complexity; it is row/column mapping and/or polarity behavior at the SR-to-driver path and/or downstream lamp path coupling.
+- Whole-row activation strongly suggests effective column select inversion/aliasing in at least one tested configuration.
+
+## Immediate Goal For Next Session
+
+Recover deterministic single-column selection in bare-bones mode without triggering multi-lamp row conduction.
+
+## Next Session Plan (safety-first)
+
+1. Keep lamp rail disconnected.
+2. Flash and verify lockout image first (`TEST_ENABLE_OUTPUTS=false`).
+3. Reconnect LA and capture SR frame behavior only (no lamp rail current risk).
+4. Arm outputs only for bounded short windows.
+5. Reconnect lamp rail only for brief observation windows.
+6. If row burst returns, power down immediately and revert to lockout.
+
+## Files To Open First Tomorrow
+
+1. `Captain-v2-matrix/src/matrix_barebones_main.cpp`
+2. `Captain-v2-matrix/BAREBONES_TEST_PROGRAM.md`
+3. `Captain-v2-matrix/README.md`
+4. `Captain-v2-matrix/platformio.ini`
+5. `Captain-v2-matrix/src/CMakeLists.txt`
+6. `END_OF_DAY_HANDOFF_2026-05-01.rmd`

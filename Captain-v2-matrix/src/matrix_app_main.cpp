@@ -1,3 +1,5 @@
+#ifndef CAPTAIN_MATRIX_BAREBONES
+
 #include <inttypes.h>
 #include <string.h>
 
@@ -20,11 +22,43 @@ constexpr uint32_t LOOP_DELAY_US = 5000;
 constexpr uint32_t OLED_REFRESH_MS = 250;
 constexpr uint16_t MATRIX_LAMP_PULSE_MIN_US = 50;
 constexpr uint16_t MATRIX_LAMP_PULSE_STEP_US = 50;
+constexpr uint16_t MATRIX_ROW_BLANK_US = 100;
+constexpr uint16_t MATRIX_ROW_SETTLE_US = 100;
 constexpr uint8_t MATRIX_SWITCH_DEBOUNCE_TICKS = 4;
+// Safety-limited proof mode: one row/column path, low duty, short timeout.
+constexpr bool MATRIX_SAFE_PROOF_MODE = true;
+constexpr uint8_t MATRIX_SAFE_PROOF_ROW = 4;  // 0-based (Row 5)
+constexpr uint8_t MATRIX_SAFE_PROOF_COL = 4;  // 0-based (L20)
+constexpr uint32_t MATRIX_SAFE_PROOF_DURATION_MS = 2000;
+constexpr uint32_t MATRIX_SAFE_PROOF_PERIOD_US = 5000;
+constexpr uint32_t MATRIX_SAFE_PROOF_ON_US = 1000;  // 20% duty
+// Guarded boot test: briefly drive one known lamp at low energy, then force all-off.
+constexpr bool MATRIX_DIAG_GUARDED_BOOT_TEST = false;
+constexpr uint8_t MATRIX_DIAG_BOOT_TEST_ROW = 4;   // 0-based row index (Row 5)
+constexpr uint8_t MATRIX_DIAG_BOOT_TEST_COL = 4;   // 0-based lamp column index (L20)
+constexpr bool MATRIX_DIAG_BOOT_TEST_SWEEP_COLS = true;
+constexpr uint8_t MATRIX_DIAG_BOOT_TEST_PULSE_LEVEL = 6;
+constexpr uint32_t MATRIX_DIAG_BOOT_TEST_COL_STEP_MS = 600;
+constexpr uint32_t MATRIX_DIAG_BOOT_TEST_COLUMN_PERIOD_US = 2500;
+constexpr uint32_t MATRIX_DIAG_BOOT_TEST_COLUMN_ON_US = 500;  // 20% duty
+constexpr uint32_t MATRIX_DIAG_BOOT_TEST_DURATION_MS =
+    MATRIX_DIAG_BOOT_TEST_SWEEP_COLS ? (MATRIX_DIAG_BOOT_TEST_COL_STEP_MS * CAPTAIN_LAMP_COLS) : 5000;
+// Bench-only mode to force one lamp path for conduction debugging.
+constexpr bool MATRIX_DIAG_FORCE_SINGLE_LAMP = false;
+constexpr bool MATRIX_DIAG_SKIP_SWITCH_SCAN = false;
+constexpr uint8_t MATRIX_DIAG_FORCE_ROW = 4;   // 0-based row index (4 => Row 5)
+constexpr uint8_t MATRIX_DIAG_FORCE_COL = 4;   // 0-based lamp column index (4 => L20)
+constexpr uint8_t MATRIX_DIAG_FORCE_PULSE_LEVEL = 10;
+// When true, bypass scan pulsing and hold one row/col frame continuously for DMM checks.
+constexpr bool MATRIX_DIAG_HOLD_ONE_LAMP_DC = false;
+// Keep row asserted while pulsing only the selected column for visible burn testing.
+constexpr bool MATRIX_DIAG_HOLD_ROW_PULSE_COLUMN = false;
+constexpr uint32_t MATRIX_DIAG_COLUMN_PULSE_PERIOD_US = 3000;
+constexpr uint32_t MATRIX_DIAG_COLUMN_PULSE_ON_US = 2000;
 // Shift-register drive mapping (set from bench results).
-constexpr bool MATRIX_SR_CHAIN_IS_COL_THEN_ROW = true;
-constexpr bool MATRIX_SR_ROW_ACTIVE_LOW = false;
-constexpr bool MATRIX_SR_COL_ACTIVE_LOW = false;
+constexpr bool MATRIX_SR_CHAIN_IS_COL_THEN_ROW = false;
+constexpr bool MATRIX_SR_ROW_ACTIVE_LOW = true;
+constexpr bool MATRIX_SR_COL_ACTIVE_LOW = true;
 constexpr i2c_port_t MATRIX_I2C_PORT = I2C_NUM_0;
 constexpr size_t MATRIX_I2C_RX_BUFFER = 128;
 constexpr size_t MATRIX_I2C_TX_BUFFER = 128;
@@ -44,9 +78,28 @@ uint8_t lampPulseWidthLevel = CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL;
 // Default enabled for bench bring-up so lamps can respond without extra setup commands.
 bool matrixSystemEnabled = true;
 bool matrixOutputEnabled = true;
+bool safeProofActive = false;
+uint64_t safeProofEndUs = 0;
+bool diagBootTestActive = false;
+uint64_t diagBootTestEndUs = 0;
 bool oledReady = false;
 uint8_t oledAddress = 0;
 uint32_t lastOledRefreshMs = 0;
+
+uint8_t guardedBootTestColumn() {
+    uint8_t bootCol = MATRIX_DIAG_BOOT_TEST_COL;
+    if (MATRIX_DIAG_BOOT_TEST_SWEEP_COLS) {
+        const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+        const uint64_t elapsedUs = nowUs >= diagBootTestEndUs
+                                       ? static_cast<uint64_t>(MATRIX_DIAG_BOOT_TEST_DURATION_MS) * 1000ULL
+                                       : (static_cast<uint64_t>(MATRIX_DIAG_BOOT_TEST_DURATION_MS) * 1000ULL) -
+                                             (diagBootTestEndUs - nowUs);
+        const uint32_t elapsedMs = static_cast<uint32_t>(elapsedUs / 1000ULL);
+        const uint32_t step = elapsedMs / MATRIX_DIAG_BOOT_TEST_COL_STEP_MS;
+        bootCol = static_cast<uint8_t>(step % CAPTAIN_LAMP_COLS);
+    }
+    return bootCol;
+}
 
 uint16_t appliedLampPulseWidthUs() {
     return static_cast<uint16_t>(MATRIX_LAMP_PULSE_MIN_US +
@@ -312,6 +365,21 @@ void writeShiftRegister16(uint16_t value) {
 }
 
 uint16_t composeLampColumnShiftValue(uint8_t row) {
+    if (diagBootTestActive) {
+        if (row == MATRIX_DIAG_BOOT_TEST_ROW) {
+            const uint8_t bootCol = guardedBootTestColumn();
+            return static_cast<uint16_t>(captainMatrixLampRowMask(bootCol));
+        }
+        return 0;
+    }
+
+    if (MATRIX_DIAG_FORCE_SINGLE_LAMP) {
+        if (row == MATRIX_DIAG_FORCE_ROW) {
+            return static_cast<uint16_t>(captainMatrixLampRowMask(MATRIX_DIAG_FORCE_COL));
+        }
+        return 0;
+    }
+
     return static_cast<uint16_t>(lampRowRam[row] & 0x1Fu);
 }
 
@@ -331,8 +399,53 @@ uint16_t composeShiftFrame(uint8_t rowMask, uint8_t colMask) {
 void refreshLampMatrixStep() {
     static uint8_t row = 0;
 
+    if (safeProofActive) {
+        const uint8_t rowMask = static_cast<uint8_t>(1u << MATRIX_SAFE_PROOF_ROW);
+        const uint8_t colMask = static_cast<uint8_t>(captainMatrixLampRowMask(MATRIX_SAFE_PROOF_COL));
+        const uint32_t phaseUs = static_cast<uint32_t>(esp_timer_get_time() % MATRIX_SAFE_PROOF_PERIOD_US);
+        const bool columnEnabled = phaseUs < MATRIX_SAFE_PROOF_ON_US;
+        const uint8_t activeColMask = columnEnabled ? colMask : 0;
+        writeShiftRegister16(composeShiftFrame(rowMask, activeColMask));
+        return;
+    }
+
+    if (diagBootTestActive) {
+        const uint8_t rowMask = static_cast<uint8_t>(1u << MATRIX_DIAG_BOOT_TEST_ROW);
+        const uint8_t colMask = static_cast<uint8_t>(captainMatrixLampRowMask(guardedBootTestColumn()));
+        const uint32_t phaseUs = static_cast<uint32_t>(esp_timer_get_time() % MATRIX_DIAG_BOOT_TEST_COLUMN_PERIOD_US);
+        const bool columnEnabled = phaseUs < MATRIX_DIAG_BOOT_TEST_COLUMN_ON_US;
+        const uint8_t activeColMask = columnEnabled ? colMask : 0;
+
+        writeShiftRegister16(composeShiftFrame(rowMask, activeColMask));
+        return;
+    }
+
+    if (MATRIX_DIAG_FORCE_SINGLE_LAMP && MATRIX_DIAG_HOLD_ONE_LAMP_DC) {
+        const uint8_t rowMask = static_cast<uint8_t>(1u << MATRIX_DIAG_FORCE_ROW);
+        const uint8_t colMask = static_cast<uint8_t>(captainMatrixLampRowMask(MATRIX_DIAG_FORCE_COL));
+
+        if (!matrixSystemEnabled || !matrixOutputEnabled) {
+            writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+            return;
+        }
+
+        bool columnEnabled = true;
+        if (MATRIX_DIAG_HOLD_ROW_PULSE_COLUMN) {
+            const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+            const uint32_t phaseUs = static_cast<uint32_t>(nowUs % MATRIX_DIAG_COLUMN_PULSE_PERIOD_US);
+            columnEnabled = (phaseUs < MATRIX_DIAG_COLUMN_PULSE_ON_US);
+        }
+
+        const uint8_t activeColMask = columnEnabled ? colMask : 0;
+        writeShiftRegister16(composeShiftFrame(rowMask, activeColMask));
+        return;
+    }
+
+    // Enforce an explicit all-off phase before every row transition.
+    writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+    esp_rom_delay_us(MATRIX_ROW_BLANK_US);
+
     if (!matrixSystemEnabled || !matrixOutputEnabled) {
-        writeShiftRegister16(composeShiftFrame(0x00, 0x00));
         row = static_cast<uint8_t>((row + 1) % CAPTAIN_SWITCH_ROWS);
         return;
     }
@@ -340,6 +453,7 @@ void refreshLampMatrixStep() {
     const uint8_t rowMask = static_cast<uint8_t>(1u << row);
     const uint8_t colMask = static_cast<uint8_t>(composeLampColumnShiftValue(row));
     writeShiftRegister16(composeShiftFrame(rowMask, colMask));
+    esp_rom_delay_us(MATRIX_ROW_SETTLE_US);
     esp_rom_delay_us(appliedLampPulseWidthUs());
     writeShiftRegister16(composeShiftFrame(0x00, 0x00));
 
@@ -357,9 +471,12 @@ void scanSwitchMatrix() {
     }
 
     for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
+        writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+        esp_rom_delay_us(MATRIX_ROW_BLANK_US);
+
         const uint8_t rowMask = static_cast<uint8_t>(1u << row);
         writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
-        esp_rom_delay_us(10);
+        esp_rom_delay_us(MATRIX_ROW_SETTLE_US);
 
         for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
             const int level = gpio_get_level(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SWITCH_COL_PINS[col]));
@@ -456,7 +573,7 @@ void handleI2CReceive(const uint8_t* packet, size_t length) {
     if ((command & 0xFEu) == CAPTAIN_MATRIX_CMD_SYSTEM_SETUP && payloadLength == 0) {
         matrixSystemEnabled = (command & CAPTAIN_MATRIX_CMD_SYSTEM_ENABLE) != 0;
         if (!matrixSystemEnabled) {
-            writeShiftRegister16(0);
+            writeShiftRegister16(composeShiftFrame(0x00, 0x00));
         }
         queueI2CResponse();
         return;
@@ -465,7 +582,7 @@ void handleI2CReceive(const uint8_t* packet, size_t length) {
     if ((command & 0xFEu) == CAPTAIN_MATRIX_CMD_OUTPUT_SETUP && payloadLength == 0) {
         matrixOutputEnabled = (command & CAPTAIN_MATRIX_CMD_OUTPUT_ENABLE) != 0;
         if (!matrixOutputEnabled) {
-            writeShiftRegister16(0);
+            writeShiftRegister16(composeShiftFrame(0x00, 0x00));
         }
         queueI2CResponse();
         return;
@@ -535,6 +652,34 @@ void logBootSummary() {
              static_cast<unsigned>(OLED_I2C_SDA_PIN),
              static_cast<unsigned>(OLED_I2C_SCL_PIN),
              oledReady ? "OK" : "missing");
+    ESP_LOGI(TAG,
+             "diag_force_single_lamp=%u row=%u col=%u skip_switch_scan=%u",
+             MATRIX_DIAG_FORCE_SINGLE_LAMP ? 1u : 0u,
+             static_cast<unsigned>(MATRIX_DIAG_FORCE_ROW),
+             static_cast<unsigned>(MATRIX_DIAG_FORCE_COL),
+             MATRIX_DIAG_SKIP_SWITCH_SCAN ? 1u : 0u);
+    ESP_LOGI(TAG,
+             "diag_hold_one_lamp_dc=%u",
+             MATRIX_DIAG_HOLD_ONE_LAMP_DC ? 1u : 0u);
+    ESP_LOGI(TAG,
+             "safe_proof_mode=%u row=%u col=%u duty=%u/%u duration_ms=%u",
+             MATRIX_SAFE_PROOF_MODE ? 1u : 0u,
+             static_cast<unsigned>(MATRIX_SAFE_PROOF_ROW),
+             static_cast<unsigned>(MATRIX_SAFE_PROOF_COL),
+             static_cast<unsigned>(MATRIX_SAFE_PROOF_ON_US),
+             static_cast<unsigned>(MATRIX_SAFE_PROOF_PERIOD_US),
+             static_cast<unsigned>(MATRIX_SAFE_PROOF_DURATION_MS));
+    ESP_LOGI(TAG,
+             "diag_guarded_boot_test=%u row=%u col=%u sweep_cols=%u step_ms=%u duty=%u/%u duration_ms=%u pulse_level=%u",
+             MATRIX_DIAG_GUARDED_BOOT_TEST ? 1u : 0u,
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_ROW),
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_COL),
+             MATRIX_DIAG_BOOT_TEST_SWEEP_COLS ? 1u : 0u,
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_COL_STEP_MS),
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_COLUMN_ON_US),
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_COLUMN_PERIOD_US),
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_DURATION_MS),
+             static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_PULSE_LEVEL));
 }
 
 void logLoopHeartbeat() {
@@ -567,9 +712,83 @@ extern "C" void app_main(void) {
     initOled();
     logBootSummary();
 
+    if (MATRIX_SAFE_PROOF_MODE) {
+        safeProofActive = true;
+        safeProofEndUs = static_cast<uint64_t>(esp_timer_get_time()) +
+                         static_cast<uint64_t>(MATRIX_SAFE_PROOF_DURATION_MS) * 1000ULL;
+        matrixSystemEnabled = true;
+        matrixOutputEnabled = true;
+        lampPulseWidthLevel = 0;
+        ESP_LOGW(TAG,
+                 "safe proof active: row=%u col=%u duty=%u/%u duration_ms=%u",
+                 static_cast<unsigned>(MATRIX_SAFE_PROOF_ROW),
+                 static_cast<unsigned>(MATRIX_SAFE_PROOF_COL),
+                 static_cast<unsigned>(MATRIX_SAFE_PROOF_ON_US),
+                 static_cast<unsigned>(MATRIX_SAFE_PROOF_PERIOD_US),
+                 static_cast<unsigned>(MATRIX_SAFE_PROOF_DURATION_MS));
+    }
+
+    if (MATRIX_DIAG_GUARDED_BOOT_TEST) {
+        diagBootTestActive = true;
+        diagBootTestEndUs = static_cast<uint64_t>(esp_timer_get_time()) +
+                            static_cast<uint64_t>(MATRIX_DIAG_BOOT_TEST_DURATION_MS) * 1000ULL;
+        matrixSystemEnabled = true;
+        matrixOutputEnabled = true;
+        lampPulseWidthLevel = MATRIX_DIAG_BOOT_TEST_PULSE_LEVEL;
+        ESP_LOGW(TAG,
+                 "guarded boot test active: row=%u col=%u pulse=%u duration_ms=%u",
+                 static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_ROW),
+                 static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_COL),
+                 static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_PULSE_LEVEL),
+                 static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_DURATION_MS));
+    }
+
+    if (MATRIX_DIAG_FORCE_SINGLE_LAMP) {
+        matrixSystemEnabled = true;
+        matrixOutputEnabled = true;
+        lampPulseWidthLevel = MATRIX_DIAG_FORCE_PULSE_LEVEL;
+    }
+
     while (true) {
         serviceI2C();
-        scanSwitchMatrix();
+
+        if (safeProofActive) {
+            const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+            if (nowUs >= safeProofEndUs) {
+                safeProofActive = false;
+                matrixOutputEnabled = false;
+                writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+                ESP_LOGW(TAG, "safe proof complete: outputs forced off");
+            } else {
+                matrixSystemEnabled = true;
+                matrixOutputEnabled = true;
+            }
+        }
+
+        if (diagBootTestActive) {
+            const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+            if (nowUs >= diagBootTestEndUs) {
+                diagBootTestActive = false;
+                matrixOutputEnabled = false;
+                writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+                ESP_LOGW(TAG, "guarded boot test complete: outputs forced off");
+            } else {
+                matrixSystemEnabled = true;
+                matrixOutputEnabled = true;
+                lampPulseWidthLevel = MATRIX_DIAG_BOOT_TEST_PULSE_LEVEL;
+            }
+        }
+
+        if (MATRIX_DIAG_FORCE_SINGLE_LAMP) {
+            matrixSystemEnabled = true;
+            matrixOutputEnabled = true;
+            lampPulseWidthLevel = MATRIX_DIAG_FORCE_PULSE_LEVEL;
+        }
+
+        if (!MATRIX_DIAG_SKIP_SWITCH_SCAN && !diagBootTestActive && !safeProofActive) {
+            scanSwitchMatrix();
+        }
+
         refreshLampMatrixStep();
         updateOledStatus();
         logLoopHeartbeat();
@@ -577,3 +796,5 @@ extern "C" void app_main(void) {
         vTaskDelay(1);
     }
 }
+
+#endif  // CAPTAIN_MATRIX_BAREBONES

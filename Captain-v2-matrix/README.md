@@ -187,3 +187,33 @@ Cross-reference:
 - Canonical redesign parking lot: `docs/NEXT_ITERATION_RECOMMENDATIONS.md`.
 - Next-iteration handoff prompt: `NEXT_CHAT_PROMPT_2026-03-26.txt`.
 - Top-level status summary: `README.md` (Current Development Focus).
+
+## 12. Current Bring-Up Status (May 2026)
+
+Current work moved to an intentionally stripped `bare-bones` firmware path to remove non-essential runtime influences (I2C service, switch scan, OLED updates, matrix scheduler complexity).
+
+### What was observed
+
+- With several previous test images, row-selection appeared functional but column selection could collapse into whole-row activation.
+- On live lamp rail, this can trip the 1.85 A polyfuse quickly when multiple lamps energize at once.
+- To protect hardware, test flow now defaults to an output lockout state and uses short, low-duty experiments only.
+
+### Safety baseline
+
+- Bare-bones source: `Captain-v2-matrix/src/matrix_barebones_main.cpp`
+- Active safety lockout control: `TEST_ENABLE_OUTPUTS`
+  - `false` = OE# forced disabled (safe default)
+  - `true` = explicit armed test mode
+
+### Bare-bones environment
+
+- PlatformIO environment: `captain_matrix_idf_barebones`
+- Selection method: compile-time macro (`CAPTAIN_MATRIX_BAREBONES`) and source gating in `src/CMakeLists.txt`
+- Note: for ESP-IDF projects, PlatformIO `src_filter` is not sufficient to select sources; use CMake + macros.
+
+### Recommended next-session flow
+
+1. Start with lamp rail disconnected and `TEST_ENABLE_OUTPUTS=false`.
+2. Verify serial/logic behavior first (no lamp conduction).
+3. Arm short low-duty tests only when ready (`TEST_ENABLE_OUTPUTS=true` with bounded window).
+4. Reconnect lamp rail only for brief observations and cut power immediately if multi-lamp row activation appears.
