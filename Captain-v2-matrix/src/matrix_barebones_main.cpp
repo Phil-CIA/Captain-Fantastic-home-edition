@@ -5,19 +5,23 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/gpio.h"
 
 #include "matrix_lamp_driver_config.h"
 
 namespace {
 constexpr char TAG[] = "mx_bare";
+constexpr char TEST_PROFILE_NAME[] = "baseline_2026_05_03_low_stress";
 
 enum class BarebonesTestMode : uint8_t {
     Column595Isolation,
+    LegacyPhasedModel,
     SingleLampPulse,
 };
 
-constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::Column595Isolation;
+constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::SingleLampPulse;
 
 // Master arm switch.
 // Keep false while wiring/checking; set true to run active bench patterns.
@@ -33,18 +37,33 @@ constexpr bool COLUMN_TEST_WALK_ALL_8_BITS = true;
 
 // Legacy single-lamp pulse target.
 
-constexpr uint8_t TEST_ROW_INDEX = 4;  // Row 5 (0-based)
-constexpr uint8_t TEST_COL_INDEX = 4;  // Col 5 / L20 path (0-based)
+// Legacy matrixTask-style phased model settings.
+constexpr uint8_t LEGACY_MODEL_ROW_INDEX = 0;  // Force Row 1 for deterministic LA trigger tests.
+constexpr bool LEGACY_MODEL_WALK_COLUMNS = false;
+constexpr uint8_t LEGACY_MODEL_FIXED_COL_MASK = 0x01;
+constexpr uint32_t LEGACY_MODEL_ROW_BLANK_US = 2000;
+constexpr uint32_t LEGACY_MODEL_ROW_SETTLE_US = 8000;
+constexpr uint32_t LEGACY_MODEL_COLUMN_ON_US = 12000;
+constexpr uint32_t LEGACY_MODEL_ROW_OFF_DEADTIME_US = 8000;
+constexpr uint32_t LEGACY_MODEL_INTER_STEP_MS = 20;
+
+constexpr uint8_t TEST_ROW_INDEX = 1;  // Row 2 (0-based)
+constexpr uint8_t TEST_COL_INDEX = 3;  // Col 4 / L19 path (0-based)
+constexpr bool TEST_WALK_LAMPS = true;
+constexpr uint8_t TEST_WALK_ROW_COUNT = 8;
+constexpr uint8_t TEST_WALK_COL_COUNT = 4;
+constexpr uint32_t TEST_WALK_BLANK_US = 2000;
+constexpr uint32_t TEST_WALK_ROW_SETTLE_US = 20000;
 
 // Single-lamp pulse settings.
-constexpr uint32_t TEST_PERIOD_US = 5000;   // 200 Hz frame
-constexpr uint32_t TEST_ON_US = 250;         // 5% duty
-constexpr uint32_t TEST_BOOT_WINDOW_MS = 500;
+constexpr uint32_t TEST_PERIOD_US = 1000000;  // 1.0 s per lamp step for faster troubleshooting
+constexpr uint32_t TEST_ON_US = 180000;       // Reduced ON time to protect bulbs during stabilization
+constexpr uint32_t TEST_BOOT_WINDOW_MS = 0;   // Run continuously
 
 // Hardware mapping switches for quick A/B.
 constexpr bool SR_CHAIN_IS_COL_THEN_ROW = true;
-constexpr bool SR_ROW_ACTIVE_LOW = true;
-constexpr bool SR_COL_ACTIVE_LOW = true;
+constexpr bool SR_ROW_ACTIVE_LOW = false;
+constexpr bool SR_COL_ACTIVE_LOW = false;
 
 void configureOutputPin(gpio_num_t pin, int initialLevel) {
     gpio_config_t config = {};
@@ -68,6 +87,32 @@ void writeShiftRegister16(uint16_t value) {
     gpio_set_level(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SR_LATCH_PIN), 1);
 }
 
+void delayUsCooperative(uint32_t delayUs) {
+    constexpr uint32_t kMaxChunkUs = 50000;
+
+    while (delayUs > 0) {
+        if (delayUs < 1000) {
+            esp_rom_delay_us(delayUs);
+            break;
+        }
+
+        uint32_t chunkUs = (delayUs > kMaxChunkUs) ? kMaxChunkUs : delayUs;
+        TickType_t ticks = pdMS_TO_TICKS(chunkUs / 1000U);
+        if (ticks == 0) {
+            ticks = 1;
+        }
+
+        vTaskDelay(ticks);
+
+        const uint32_t sleptUs = static_cast<uint32_t>(ticks) * portTICK_PERIOD_MS * 1000U;
+        if (sleptUs >= delayUs) {
+            delayUs = 0;
+        } else {
+            delayUs -= sleptUs;
+        }
+    }
+}
+
 uint16_t composeShiftFrame(uint8_t rowMask, uint8_t colMask) {
     const uint8_t rowOut = SR_ROW_ACTIVE_LOW ? static_cast<uint8_t>(~rowMask) : rowMask;
     const uint8_t colOut = SR_COL_ACTIVE_LOW ? static_cast<uint8_t>(~colMask) : colMask;
@@ -89,6 +134,7 @@ void initPins() {
 }
 
 void logConfig() {
+    ESP_LOGI(TAG, "test_profile=%s", TEST_PROFILE_NAME);
     ESP_LOGI(TAG,
              "barebones test row=%u col=%u period_us=%" PRIu32 " on_us=%" PRIu32 " boot_window_ms=%" PRIu32,
              static_cast<unsigned>(TEST_ROW_INDEX),
@@ -107,11 +153,25 @@ void logConfig() {
              SR_COL_ACTIVE_LOW ? 1u : 0u);
     ESP_LOGI(TAG,
              "mode=%s oe_forced_low_when_enabled=%u column_hold_ms=%u walk8=%u aa55=%u",
-             TEST_MODE == BarebonesTestMode::Column595Isolation ? "column_595_isolation" : "single_lamp_pulse",
+             TEST_MODE == BarebonesTestMode::Column595Isolation
+                 ? "column_595_isolation"
+                 : (TEST_MODE == BarebonesTestMode::LegacyPhasedModel ? "legacy_phased_model"
+                                                                       : "single_lamp_pulse"),
              TEST_FORCE_OE_LOW_WHEN_ENABLED ? 1u : 0u,
              static_cast<unsigned>(COLUMN_TEST_HOLD_MS),
              COLUMN_TEST_WALK_ALL_8_BITS ? 1u : 0u,
              COLUMN_TEST_INCLUDE_AA55 ? 1u : 0u);
+    ESP_LOGI(TAG,
+             "legacy_model row=%u walk_columns=%u fixed_col_mask=0x%02X blank_us=%" PRIu32
+             " settle_us=%" PRIu32 " on_us=%" PRIu32 " deadtime_us=%" PRIu32 " inter_step_ms=%" PRIu32,
+             static_cast<unsigned>(LEGACY_MODEL_ROW_INDEX),
+             LEGACY_MODEL_WALK_COLUMNS ? 1u : 0u,
+             static_cast<unsigned>(LEGACY_MODEL_FIXED_COL_MASK),
+             LEGACY_MODEL_ROW_BLANK_US,
+             LEGACY_MODEL_ROW_SETTLE_US,
+             LEGACY_MODEL_COLUMN_ON_US,
+             LEGACY_MODEL_ROW_OFF_DEADTIME_US,
+             LEGACY_MODEL_INTER_STEP_MS);
     ESP_LOGW(TAG, "output_lockout=%u (set TEST_ENABLE_OUTPUTS=true only after fuse-safe checks)",
              TEST_ENABLE_OUTPUTS ? 0u : 1u);
 }
@@ -147,7 +207,7 @@ void runColumn595IsolationLoop() {
             writeShiftRegister16(frame);
             ESP_LOGI(TAG, "column_595_latch col_mask=0x%02X frame=0x%04X", static_cast<unsigned>(colMask),
                      static_cast<unsigned>(frame));
-            esp_rom_delay_us(static_cast<uint32_t>(COLUMN_TEST_HOLD_MS) * 1000U);
+            delayUsCooperative(static_cast<uint32_t>(COLUMN_TEST_HOLD_MS) * 1000U);
         }
     }
 }
@@ -156,25 +216,91 @@ void runSingleLampPulseLoop() {
     const uint8_t rowMask = static_cast<uint8_t>(1u << TEST_ROW_INDEX);
     const uint8_t colMask = static_cast<uint8_t>(1u << TEST_COL_INDEX);
     const uint16_t onFrame = composeShiftFrame(rowMask, colMask);
-    const uint16_t offFrame = composeShiftFrame(rowMask, 0x00);
+    const uint16_t offFrame = composeShiftFrame(0x00, 0x00);
     const uint64_t startUs = static_cast<uint64_t>(esp_timer_get_time());
 
     while (true) {
+        if (TEST_WALK_LAMPS) {
+            for (uint8_t row = 0; row < TEST_WALK_ROW_COUNT; row++) {
+                for (uint8_t col = 0; col < TEST_WALK_COL_COUNT; col++) {
+                    const uint16_t rowOnlyFrame = composeShiftFrame(static_cast<uint8_t>(1u << row), 0x00);
+                    const uint16_t walkOnFrame = composeShiftFrame(static_cast<uint8_t>(1u << row),
+                                                                   static_cast<uint8_t>(1u << col));
+                    ESP_LOGI(TAG, "lamp_walk row=%u col=%u frame=0x%04X", static_cast<unsigned>(row),
+                             static_cast<unsigned>(col), static_cast<unsigned>(walkOnFrame));
+
+                    // Phase A: explicit blanking before row/column step.
+                    writeShiftRegister16(offFrame);
+                    delayUsCooperative(TEST_WALK_BLANK_US);
+
+                    // Phase B: row-only settle so slow row drivers are stable before enabling column.
+                    writeShiftRegister16(rowOnlyFrame);
+                    delayUsCooperative(TEST_WALK_ROW_SETTLE_US);
+
+                    // Phase C: row+column on.
+                    writeShiftRegister16(walkOnFrame);
+                    delayUsCooperative(TEST_ON_US);
+
+                    // Phase D: all off.
+                    writeShiftRegister16(offFrame);
+                    delayUsCooperative(TEST_PERIOD_US - TEST_ON_US);
+                }
+            }
+            continue;
+        }
+
         const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
         if (TEST_BOOT_WINDOW_MS > 0) {
             const uint64_t elapsedMs = (nowUs - startUs) / 1000ULL;
             if (elapsedMs >= TEST_BOOT_WINDOW_MS) {
                 writeShiftRegister16(composeShiftFrame(0x00, 0x00));
-                esp_rom_delay_us(20000);
+                delayUsCooperative(20000);
                 continue;
             }
         }
 
         writeShiftRegister16(onFrame);
-        esp_rom_delay_us(TEST_ON_US);
+        delayUsCooperative(TEST_ON_US);
 
         writeShiftRegister16(offFrame);
-        esp_rom_delay_us(TEST_PERIOD_US - TEST_ON_US);
+        delayUsCooperative(TEST_PERIOD_US - TEST_ON_US);
+    }
+}
+
+void runLegacyPhasedModelLoop() {
+    const uint8_t rowMask = static_cast<uint8_t>(1u << LEGACY_MODEL_ROW_INDEX);
+    static const uint8_t kColumnWalkMasks[] = {0x01, 0x02, 0x04, 0x08, 0x10};
+
+    while (true) {
+        for (size_t idx = 0; idx < sizeof(kColumnWalkMasks); idx++) {
+            const uint8_t colMask = LEGACY_MODEL_WALK_COLUMNS ? kColumnWalkMasks[idx] : LEGACY_MODEL_FIXED_COL_MASK;
+
+            // Phase 1: explicit all-off blanking before any row transition.
+            writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+            delayUsCooperative(LEGACY_MODEL_ROW_BLANK_US);
+
+            // Phase 2: row selected, columns off.
+            writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
+            delayUsCooperative(LEGACY_MODEL_ROW_SETTLE_US);
+
+            // Phase 3: same row, selected columns on.
+            writeShiftRegister16(composeShiftFrame(rowMask, colMask));
+            delayUsCooperative(LEGACY_MODEL_COLUMN_ON_US);
+
+            // Phase 4: columns off while row still selected.
+            writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
+            delayUsCooperative(LEGACY_MODEL_ROW_OFF_DEADTIME_US);
+
+            // Phase 5: row off before next step.
+            writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+            ESP_LOGI(TAG, "legacy_step row=%u col_mask=0x%02X", static_cast<unsigned>(LEGACY_MODEL_ROW_INDEX),
+                     static_cast<unsigned>(colMask));
+            delayUsCooperative(LEGACY_MODEL_INTER_STEP_MS * 1000U);
+
+            if (!LEGACY_MODEL_WALK_COLUMNS) {
+                break;
+            }
+        }
     }
 }
 } // namespace
@@ -186,12 +312,14 @@ extern "C" void app_main(void) {
     if (!TEST_ENABLE_OUTPUTS) {
         writeShiftRegister16(composeShiftFrame(0x00, 0x00));
         while (true) {
-            esp_rom_delay_us(50000);
+            delayUsCooperative(50000);
         }
     }
 
     if (TEST_MODE == BarebonesTestMode::Column595Isolation) {
         runColumn595IsolationLoop();
+    } else if (TEST_MODE == BarebonesTestMode::LegacyPhasedModel) {
+        runLegacyPhasedModelLoop();
     } else {
         runSingleLampPulseLoop();
     }
