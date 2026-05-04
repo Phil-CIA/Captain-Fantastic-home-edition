@@ -13,15 +13,16 @@
 
 namespace {
 constexpr char TAG[] = "mx_bare";
-constexpr char TEST_PROFILE_NAME[] = "baseline_2026_05_03_low_stress";
+constexpr char TEST_PROFILE_NAME[] = "phase1_control_driven_scan_2026_05_04";
 
 enum class BarebonesTestMode : uint8_t {
     Column595Isolation,
     LegacyPhasedModel,
     SingleLampPulse,
+    ControlDrivenScan,  // Phase 1: canonical runtime sequence, lamp state from lampRowRam[]
 };
 
-constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::SingleLampPulse;
+constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::ControlDrivenScan;
 
 // Master arm switch.
 // Keep false while wiring/checking; set true to run active bench patterns.
@@ -59,6 +60,29 @@ constexpr uint32_t TEST_WALK_ROW_SETTLE_US = 20000;
 constexpr uint32_t TEST_PERIOD_US = 1000000;  // 1.0 s per lamp step for faster troubleshooting
 constexpr uint32_t TEST_ON_US = 180000;       // Reduced ON time to protect bulbs during stabilization
 constexpr uint32_t TEST_BOOT_WINDOW_MS = 0;   // Run continuously
+
+// ControlDrivenScan mode: canonical runtime sequence from lampRowRam[]
+// Uses proven bring-up polarity (SR_CHAIN_IS_COL_THEN_ROW=true, active-high).
+// Row scan: blank -> row settle -> row+col pulse -> all-off -> next row.
+// Pulse width steps match the production formula (MIN + LEVEL * STEP).
+constexpr uint8_t CDS_LAMP_ROWS = 8;
+constexpr uint16_t CDS_ROW_BLANK_US  = 2000;   // Proven safe from bring-up baseline
+constexpr uint16_t CDS_ROW_SETTLE_US = 20000;  // Proven safe from bring-up baseline
+constexpr uint16_t CDS_PULSE_MIN_US  = 50;
+constexpr uint16_t CDS_PULSE_STEP_US = 50;
+constexpr uint8_t  CDS_PULSE_LEVEL   = 4;      // Default level 4 => 250 µs pulse (matches production default)
+// Initial test pattern: column 0 lit on every row so all rows show a visible lamp.
+// Set to 0 for fully dark; change per-row to test specific positions.
+constexpr uint8_t CDS_INITIAL_LAMP_RAM[CDS_LAMP_ROWS] = {
+    0x01,  // row 0: col 0 on
+    0x01,  // row 1: col 0 on
+    0x01,  // row 2: col 0 on
+    0x01,  // row 3: col 0 on
+    0x01,  // row 4: col 0 on
+    0x01,  // row 5: col 0 on
+    0x01,  // row 6: col 0 on
+    0x01,  // row 7: col 0 on
+};
 
 // Hardware mapping switches for quick A/B.
 constexpr bool SR_CHAIN_IS_COL_THEN_ROW = true;
@@ -155,8 +179,10 @@ void logConfig() {
              "mode=%s oe_forced_low_when_enabled=%u column_hold_ms=%u walk8=%u aa55=%u",
              TEST_MODE == BarebonesTestMode::Column595Isolation
                  ? "column_595_isolation"
-                 : (TEST_MODE == BarebonesTestMode::LegacyPhasedModel ? "legacy_phased_model"
-                                                                       : "single_lamp_pulse"),
+                 : (TEST_MODE == BarebonesTestMode::LegacyPhasedModel
+                        ? "legacy_phased_model"
+                        : (TEST_MODE == BarebonesTestMode::ControlDrivenScan ? "control_driven_scan"
+                                                                              : "single_lamp_pulse")),
              TEST_FORCE_OE_LOW_WHEN_ENABLED ? 1u : 0u,
              static_cast<unsigned>(COLUMN_TEST_HOLD_MS),
              COLUMN_TEST_WALK_ALL_8_BITS ? 1u : 0u,
@@ -303,6 +329,72 @@ void runLegacyPhasedModelLoop() {
         }
     }
 }
+// ---------------------------------------------------------------------------
+// Phase 1: ControlDrivenScan - canonical production sequence in barebones.
+//
+// Implements the authoritative row-scan loop outside app_main so it can be
+// validated independently before any changes to the production runtime.
+//
+// State sequence per row (matches production refreshLampMatrixStep intent):
+//   Phase A  all-off blank        CDS_ROW_BLANK_US
+//   Phase B  row-only settle      CDS_ROW_SETTLE_US
+//   Phase C  row + column pulse   CDS_PULSE_MIN_US + level * CDS_PULSE_STEP_US
+//   Phase D  all-off release      (immediate, then advance row)
+//
+// Lamp state lives in lampRam[8]. In this first phase the array is pre-loaded
+// with CDS_INITIAL_LAMP_RAM[]. A later phase will wire I2C or serial writes
+// to this array so control-board intent drives the scan live.
+//
+// Polarity uses proven bring-up values (SR_CHAIN_IS_COL_THEN_ROW=true,
+// active-high row and column). Reconciliation with app_main constants is a
+// separate step after hardware validation here.
+// ---------------------------------------------------------------------------
+void runControlDrivenScanLoop() {
+    uint8_t lampRam[CDS_LAMP_ROWS];
+    for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
+        lampRam[i] = CDS_INITIAL_LAMP_RAM[i];
+    }
+
+    const uint16_t pulseUs = static_cast<uint16_t>(CDS_PULSE_MIN_US + CDS_PULSE_LEVEL * CDS_PULSE_STEP_US);
+    ESP_LOGI(TAG, "cds_start rows=%u blank_us=%u settle_us=%u pulse_us=%u",
+             static_cast<unsigned>(CDS_LAMP_ROWS),
+             static_cast<unsigned>(CDS_ROW_BLANK_US),
+             static_cast<unsigned>(CDS_ROW_SETTLE_US),
+             static_cast<unsigned>(pulseUs));
+
+    uint8_t row = 0;
+    while (true) {
+        // Phase A: all-off blank before every row transition.
+        writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+        delayUsCooperative(CDS_ROW_BLANK_US);
+
+        // Phase B: row-only settle so row drivers are stable before column enable.
+        const uint8_t rowMask = static_cast<uint8_t>(1u << row);
+        writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
+        delayUsCooperative(CDS_ROW_SETTLE_US);
+
+        // Phase C: row + active columns from lamp RAM (lower 5 bits = cols 0-4).
+        const uint8_t colMask = lampRam[row] & 0x1Fu;
+        if (colMask != 0) {
+            writeShiftRegister16(composeShiftFrame(rowMask, colMask));
+            delayUsCooperative(pulseUs);
+        }
+
+        // Phase D: all-off release after pulse.
+        writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+
+        ESP_LOGD(TAG, "cds_row row=%u col_mask=0x%02X",
+                 static_cast<unsigned>(row), static_cast<unsigned>(colMask));
+
+        row = static_cast<uint8_t>((row + 1u) % CDS_LAMP_ROWS);
+
+        // Yield to RTOS once per full 8-row cycle so watchdog stays fed.
+        if (row == 0) {
+            vTaskDelay(1);
+        }
+    }
+}
+
 } // namespace
 
 extern "C" void app_main(void) {
@@ -320,6 +412,8 @@ extern "C" void app_main(void) {
         runColumn595IsolationLoop();
     } else if (TEST_MODE == BarebonesTestMode::LegacyPhasedModel) {
         runLegacyPhasedModelLoop();
+    } else if (TEST_MODE == BarebonesTestMode::ControlDrivenScan) {
+        runControlDrivenScanLoop();
     } else {
         runSingleLampPulseLoop();
     }
