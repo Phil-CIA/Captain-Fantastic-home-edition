@@ -1,0 +1,48 @@
+# End Of Day Handoff - 2026-05-04
+
+## Session stop point
+Bench validation paused after scope/LA timing check.
+
+Observed on oscilloscope:
+- Row pulse leads column pulse by approximately 5 ms to 20 ms.
+- Expected row/column coordination is not yet matching per-step scan intent.
+
+Observed on logic analyzer (LA1010):
+- Activity is visible on channels 5 and 6 (column channels under test).
+- Corresponding row channels (9 and 10 in the current probe map) show related events, but edge alignment still needs correlation against scope timing.
+
+## Firmware and config state committed in this checkpoint
+
+Matrix runtime (C6):
+- Increased lamp pulse width constants in runtime scan path to target stronger conduction.
+- Kept OE# enabled at boot (active-low pin held low once during init).
+- Maintained phased refresh sequencing (blank -> row settle -> row+col pulse -> release).
+- Added periodic matrix link counters/log summary for RX/command visibility.
+- Disabled switch-scan interleave in runtime diagnostics for cleaner timing traces.
+- Shift-register mapping currently set to chain_col_then_row=true, row_active_low=false, col_active_low=false.
+
+Control board (ESP32):
+- Headbox attract bypass disabled so matrix write/read traffic runs continuously in loop.
+- writeMatrixCommand() currently sends fixed test lamps for isolation (L22, L2, L13 path).
+- Added matrix link summary counters/logging and reduced verbose event logging noise.
+
+Project config:
+- Matrix default PlatformIO env set back to runtime env (captain_matrix_idf).
+- captain_control env pinned to espressif32 @ 6.7.0 for toolchain consistency.
+
+## Known blocker at handoff
+Physical lamp illumination still not confirmed despite valid I2C traffic and visible SR activity.
+Primary open issue from latest bench note: row pulse appears significantly early (5-20 ms) relative to column pulse on scope.
+
+## Resume checklist
+1. Re-capture synchronized scope + LA on the same trigger edge (latch or row rising edge).
+2. Measure row-to-column delta for one full row slot and compare against configured microsecond delays.
+3. Verify probe mapping against actual row/column output pins at the 595 outputs (not only MCU-side control).
+4. If row lead persists, instrument runtime with per-phase GPIO marker pulses to prove software phase boundaries in real time.
+5. Confirm lamp drive voltage/current at matrix connector during active row+column overlap window.
+
+## Last verified runtime serial indicator
+Runtime showed pulse_us=500 in periodic matrix logs after upload.
+
+## Notes
+Stopping here intentionally per request to preserve this exact debug state for next session.

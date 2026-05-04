@@ -24,6 +24,10 @@ constexpr uint8_t HEARTBEAT_PIN = 2;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
+constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
+constexpr bool VERBOSE_SWITCH_EVENT_LOGS = false;
+constexpr bool VERBOSE_SOLENOID_LOGS = false;
+constexpr bool VERBOSE_DIRECT_INPUT_LOGS = false;
 
 uint32_t displayScore = 0;
 uint32_t lastDisplayUpdate = 0;
@@ -58,6 +62,16 @@ bool matrixDeviceReady = false;
 uint32_t lastMatrixGoodTransactionMs = 0;
 uint32_t lastMatrixDiagPollMs = 0;
 bool matrixLinkFaulted = false;
+uint32_t matrixWriteOkCount = 0;
+uint32_t matrixWriteFailCount = 0;
+uint32_t matrixReadOkCount = 0;
+uint32_t matrixReadFailCount = 0;
+uint32_t matrixDiagReadFailCount = 0;
+uint32_t matrixDiagWarnCount = 0;
+uint32_t lastMatrixLinkSummaryMs = 0;
+uint8_t lastMatrixSwitch0 = 0;
+bool matrixSwitch0Seen = false;
+bool matrixDiagFaulted = false;
 
 void updateHeadboxLamps(uint16_t pattern);
 
@@ -138,6 +152,23 @@ void initMatrixDevice() {
                       systemOk ? 1u : 0u,
                       outputOk ? 1u : 0u);
     }
+}
+
+void logMatrixLinkSummary(uint32_t now) {
+    if ((now - lastMatrixLinkSummaryMs) < MATRIX_LINK_SUMMARY_MS) {
+        return;
+    }
+
+    lastMatrixLinkSummaryMs = now;
+    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X\n",
+                  matrixDeviceReady ? 1u : 0u,
+                  matrixLinkFaulted ? 1u : 0u,
+                  static_cast<unsigned long>(matrixWriteOkCount),
+                  static_cast<unsigned long>(matrixWriteFailCount),
+                  static_cast<unsigned long>(matrixReadOkCount),
+                  static_cast<unsigned long>(matrixReadFailCount),
+                  static_cast<unsigned long>(matrixDiagWarnCount),
+                  static_cast<unsigned>(lastMatrixSwitch0));
 }
 
 void updateOtaVisual(uint32_t now) {
@@ -578,7 +609,9 @@ void fireSolenoid(CaptainSolenoidId solenoidId) {
     digitalWrite(pin, HIGH);
     solenoidActive[solenoidId] = true;
     solenoidStartedAtMs[solenoidId] = millis();
-    Serial.printf("Solenoid fired: %s (GPIO %u)\n", CAPTAIN_SOLENOID_NAMES[solenoidId], pin);
+    if (VERBOSE_SOLENOID_LOGS) {
+        Serial.printf("Solenoid fired: %s (GPIO %u)\n", CAPTAIN_SOLENOID_NAMES[solenoidId], pin);
+    }
 }
 
 void updateSolenoidPulses(uint32_t now) {
@@ -604,7 +637,9 @@ bool readDirectInputActive(CaptainDirectInputId inputId) {
 }
 
 void onDirectInputPressed(CaptainDirectInputId inputId) {
-    Serial.printf("Direct input pressed: %s (GPIO %u)\n", CAPTAIN_DIRECT_INPUT_NAMES[inputId], CAPTAIN_DIRECT_INPUT_PINS[inputId]);
+    if (VERBOSE_DIRECT_INPUT_LOGS) {
+        Serial.printf("Direct input pressed: %s (GPIO %u)\n", CAPTAIN_DIRECT_INPUT_NAMES[inputId], CAPTAIN_DIRECT_INPUT_PINS[inputId]);
+    }
 
     if (inputId == DIRECT_INPUT_START) {
         displayScore = 0;
@@ -625,7 +660,9 @@ void onDirectInputPressed(CaptainDirectInputId inputId) {
 }
 
 void onDirectInputReleased(CaptainDirectInputId inputId) {
-    Serial.printf("Direct input released: %s (GPIO %u)\n", CAPTAIN_DIRECT_INPUT_NAMES[inputId], CAPTAIN_DIRECT_INPUT_PINS[inputId]);
+    if (VERBOSE_DIRECT_INPUT_LOGS) {
+        Serial.printf("Direct input released: %s (GPIO %u)\n", CAPTAIN_DIRECT_INPUT_NAMES[inputId], CAPTAIN_DIRECT_INPUT_PINS[inputId]);
+    }
 }
 
 void initDirectInputs() {
@@ -728,7 +765,9 @@ void handleSwitchEdges(const uint8_t* switchBits) {
             if (!previous && current) {
                 const uint32_t points = scoreForSwitch(row, col);
                 displayScore += points;
-                Serial.printf("Switch M%u/SW%u: %s (+%lu)\n", row + 1, col + 1, captainSwitchName(row, col), static_cast<unsigned long>(points));
+                if (VERBOSE_SWITCH_EVENT_LOGS) {
+                    Serial.printf("Switch M%u/SW%u: %s (+%lu)\n", row + 1, col + 1, captainSwitchName(row, col), static_cast<unsigned long>(points));
+                }
 
                 if (row == 0 && col == 0) {
                     fireSolenoid(SOLENOID_S2);
@@ -758,16 +797,10 @@ bool readMatrixDiagnostics(uint8_t* diagBytes) {
 
 bool writeMatrixCommand() {
     uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
-    lampRows[1] |= captainMatrixLampRowMask(1);
+    // Fixed lamp path test set: L22 (row0,col4), L2 (row2,col1), L13 (row3,col2).
+    lampRows[0] |= captainMatrixLampRowMask(4);
     lampRows[2] |= captainMatrixLampRowMask(1);
-    lampRows[3] |= captainMatrixLampRowMask(1);
-
-    const bool blink = ((millis() / 350) % 2) != 0;
-    if (blink) {
-        lampRows[4] |= captainMatrixLampRowMask(1);
-        lampRows[2] |= captainMatrixLampRowMask(3);
-        lampRows[5] |= captainMatrixLampRowMask(3);
-    }
+    lampRows[3] |= captainMatrixLampRowMask(2);
 
     const bool writeOk = matrixWriteRegisters(CAPTAIN_MATRIX_REG_LAMP_BASE, lampRows, sizeof(lampRows));
     if (!writeOk) {
@@ -919,9 +952,21 @@ void loop() {
             }
 
             const bool writeOk = writeMatrixCommand();
+            if (writeOk) {
+                matrixWriteOkCount++;
+            } else {
+                matrixWriteFailCount++;
+            }
 
             uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
             const bool readOk = readMatrixSwitches(switchBits);
+            if (readOk) {
+                matrixReadOkCount++;
+                lastMatrixSwitch0 = switchBits[0];
+                matrixSwitch0Seen = true;
+            } else {
+                matrixReadFailCount++;
+            }
             if (writeOk && readOk && !matrixLinkFaulted) {
                 handleSwitchEdges(switchBits);
                 matrixDeviceReady = true;
@@ -937,9 +982,17 @@ void loop() {
                     const bool systemEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_SYSTEM_ENABLED) != 0;
                     const bool outputEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_OUTPUT_ENABLED) != 0;
                     if (!systemEnabled || !outputEnabled) {
-                        Serial.printf("Matrix diag warning: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
+                        matrixDiagWarnCount++;
+                        if (!matrixDiagFaulted) {
+                            matrixDiagFaulted = true;
+                            Serial.printf("Matrix diag warning: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
+                        }
+                    } else if (matrixDiagFaulted) {
+                        matrixDiagFaulted = false;
+                        Serial.printf("Matrix diag recovered: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
                     }
                 } else {
+                    matrixDiagReadFailCount++;
                     matrixDeviceReady = false;
                 }
             }
@@ -947,6 +1000,10 @@ void loop() {
             const bool blink = ((now / 350) % 2) != 0;
             headboxPattern = composeHeadboxPattern(displayScore, blink);
             updateHeadboxLamps(headboxPattern);
+            if (!matrixSwitch0Seen) {
+                lastMatrixSwitch0 = 0;
+            }
+            logMatrixLinkSummary(now);
         }
     }
 

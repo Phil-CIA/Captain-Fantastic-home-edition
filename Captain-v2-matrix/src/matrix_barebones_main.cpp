@@ -84,6 +84,10 @@ constexpr bool CDS_ENABLE_SCRIPT_CONTROL = true;
 // Matrix pattern source: mirrors control_main.cpp::writeMatrixCommand().
 constexpr bool CDS_USE_MATRIX_CONTROL_PATTERN = true;
 constexpr uint32_t CDS_MATRIX_PATTERN_BLINK_MS = 350;
+// Contract emulator: model a row-byte register window at 0x00..0x07.
+// Scripted sources write here first; scan consumes lampRam copied from this window.
+constexpr bool CDS_ENABLE_CONTRACT_EMULATOR = true;
+constexpr uint32_t CDS_CONTRACT_WRITE_PERIOD_MS = 20;
 // Optional fallback column-chase source.
 constexpr uint32_t CDS_ATTRACT_LOOP_PERIOD_MS = 1000;
 constexpr uint32_t CDS_ATTRACT_MIN_STEP_MS = 20;
@@ -147,6 +151,51 @@ void applyMatrixControlPattern(uint32_t nowMs, uint8_t* lampRam) {
         lampRam[4] |= static_cast<uint8_t>(1u << 1); // row 4, col 1
         lampRam[2] |= static_cast<uint8_t>(1u << 3); // row 2, col 3
         lampRam[5] |= static_cast<uint8_t>(1u << 3); // row 5, col 3
+    }
+}
+
+struct MatrixContractWindow {
+    uint8_t pointer;
+    uint8_t rows[CDS_LAMP_ROWS];
+};
+
+void initContractWindow(MatrixContractWindow* window, const uint8_t* seedRows) {
+    if (window == nullptr) {
+        return;
+    }
+
+    window->pointer = 0;
+    for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
+        window->rows[i] = (seedRows != nullptr) ? seedRows[i] : 0x00;
+    }
+}
+
+void contractSetPointer(MatrixContractWindow* window, uint8_t regAddress) {
+    if (window == nullptr) {
+        return;
+    }
+
+    window->pointer = static_cast<uint8_t>(regAddress & 0x07u);
+}
+
+void contractWriteSequential(MatrixContractWindow* window, const uint8_t* data, size_t len) {
+    if (window == nullptr || data == nullptr || len == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < len; i++) {
+        window->rows[window->pointer] = static_cast<uint8_t>(data[i] & 0x1Fu);
+        window->pointer = static_cast<uint8_t>((window->pointer + 1u) & 0x07u);
+    }
+}
+
+void copyContractRowsToLampRam(const MatrixContractWindow* window, uint8_t* lampRam) {
+    if (window == nullptr || lampRam == nullptr) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
+        lampRam[i] = static_cast<uint8_t>(window->rows[i] & 0x1Fu);
     }
 }
 
@@ -264,6 +313,12 @@ void logConfig() {
              LEGACY_MODEL_COLUMN_ON_US,
              LEGACY_MODEL_ROW_OFF_DEADTIME_US,
              LEGACY_MODEL_INTER_STEP_MS);
+    ESP_LOGI(TAG,
+             "cds script=%u matrix_pattern=%u contract_emu=%u contract_period_ms=%" PRIu32,
+             CDS_ENABLE_SCRIPT_CONTROL ? 1u : 0u,
+             CDS_USE_MATRIX_CONTROL_PATTERN ? 1u : 0u,
+             CDS_ENABLE_CONTRACT_EMULATOR ? 1u : 0u,
+             CDS_CONTRACT_WRITE_PERIOD_MS);
     ESP_LOGW(TAG, "output_lockout=%u (set TEST_ENABLE_OUTPUTS=true only after fuse-safe checks)",
              TEST_ENABLE_OUTPUTS ? 0u : 1u);
 }
@@ -420,6 +475,8 @@ void runControlDrivenScanLoop() {
     for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
         lampRam[i] = CDS_INITIAL_LAMP_RAM[i];
     }
+    MatrixContractWindow contractWindow = {};
+    initContractWindow(&contractWindow, lampRam);
 
     auto trim = [](char* s) {
         size_t n = strlen(s);
@@ -478,6 +535,9 @@ void runControlDrivenScanLoop() {
 
     uint16_t columnOnUs = CDS_COLUMN_ON_US;
     uint64_t lastStatusLogMs = 0;
+    uint64_t lastContractWriteMs = 0;
+    bool contractWritePrimed = false;
+    uint8_t scriptRows[CDS_LAMP_ROWS] = {};
     char serialLine[96] = {};
     size_t serialLen = 0;
     bool serialControlActive = CDS_ENABLE_SERIAL_CONTROL;
@@ -509,8 +569,9 @@ void runControlDrivenScanLoop() {
     }
     if (CDS_ENABLE_SCRIPT_CONTROL) {
         ESP_LOGI(TAG,
-                 "cds_script enabled source=%s",
-                 CDS_USE_MATRIX_CONTROL_PATTERN ? "matrix_control_pattern" : "column_chase_fallback");
+                 "cds_script enabled source=%s ingest=%s",
+                 CDS_USE_MATRIX_CONTROL_PATTERN ? "matrix_control_pattern" : "column_chase_fallback",
+                 CDS_ENABLE_CONTRACT_EMULATOR ? "contract_window_0x00_0x07" : "direct_lamp_ram");
         if (CDS_USE_MATRIX_CONTROL_PATTERN) {
             ESP_LOGI(TAG, "cds_matrix_pattern blink_ms=%u", static_cast<unsigned>(CDS_MATRIX_PATTERN_BLINK_MS));
         } else {
@@ -617,13 +678,32 @@ void runControlDrivenScanLoop() {
             }
         }
 
+        const uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000ULL);
+
         if (CDS_ENABLE_SCRIPT_CONTROL) {
-            const uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000ULL);
             if (CDS_USE_MATRIX_CONTROL_PATTERN) {
-                applyMatrixControlPattern(static_cast<uint32_t>(nowMs), lampRam);
+                applyMatrixControlPattern(static_cast<uint32_t>(nowMs), scriptRows);
             } else {
-                applyAttractFrame(static_cast<uint32_t>(nowMs), lampRam);
+                applyAttractFrame(static_cast<uint32_t>(nowMs), scriptRows);
             }
+
+            if (CDS_ENABLE_CONTRACT_EMULATOR) {
+                if (!contractWritePrimed || (nowMs - lastContractWriteMs) >= CDS_CONTRACT_WRITE_PERIOD_MS) {
+                    // Emulate a control-board style write burst to row-byte window 0x00..0x07.
+                    contractSetPointer(&contractWindow, 0x00);
+                    contractWriteSequential(&contractWindow, scriptRows, CDS_LAMP_ROWS);
+                    lastContractWriteMs = nowMs;
+                    contractWritePrimed = true;
+                }
+            } else {
+                for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
+                    lampRam[i] = scriptRows[i];
+                }
+            }
+        }
+
+        if (CDS_ENABLE_CONTRACT_EMULATOR) {
+            copyContractRowsToLampRam(&contractWindow, lampRam);
         }
 
         // Phase A: all-off blank before every row transition.

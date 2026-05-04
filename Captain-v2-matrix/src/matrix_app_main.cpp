@@ -20,13 +20,15 @@ namespace {
 constexpr char TAG[] = "captain_matrix";
 constexpr uint32_t LOOP_DELAY_US = 5000;
 constexpr uint32_t OLED_REFRESH_MS = 250;
-constexpr uint16_t MATRIX_LAMP_PULSE_MIN_US = 50;
-constexpr uint16_t MATRIX_LAMP_PULSE_STEP_US = 50;
-constexpr uint16_t MATRIX_ROW_BLANK_US = 100;
-constexpr uint16_t MATRIX_ROW_SETTLE_US = 100;
+constexpr uint32_t MATRIX_LINK_LOG_MS = 1000;
+constexpr uint16_t MATRIX_LAMP_PULSE_MIN_US = 100;
+constexpr uint16_t MATRIX_LAMP_PULSE_STEP_US = 100;
+constexpr uint16_t MATRIX_ROW_BLANK_US = 50;
+constexpr uint16_t MATRIX_ROW_SETTLE_US = 50;
+constexpr uint16_t MATRIX_ROW_POST_HOLD_US = 50;
 constexpr uint8_t MATRIX_SWITCH_DEBOUNCE_TICKS = 4;
 // Safety-limited proof mode: one row/column path, low duty, short timeout.
-constexpr bool MATRIX_SAFE_PROOF_MODE = true;
+constexpr bool MATRIX_SAFE_PROOF_MODE = false;
 constexpr uint8_t MATRIX_SAFE_PROOF_ROW = 4;  // 0-based (Row 5)
 constexpr uint8_t MATRIX_SAFE_PROOF_COL = 4;  // 0-based (L20)
 constexpr uint32_t MATRIX_SAFE_PROOF_DURATION_MS = 2000;
@@ -45,7 +47,7 @@ constexpr uint32_t MATRIX_DIAG_BOOT_TEST_DURATION_MS =
     MATRIX_DIAG_BOOT_TEST_SWEEP_COLS ? (MATRIX_DIAG_BOOT_TEST_COL_STEP_MS * CAPTAIN_LAMP_COLS) : 5000;
 // Bench-only mode to force one lamp path for conduction debugging.
 constexpr bool MATRIX_DIAG_FORCE_SINGLE_LAMP = false;
-constexpr bool MATRIX_DIAG_SKIP_SWITCH_SCAN = false;
+constexpr bool MATRIX_DIAG_SKIP_SWITCH_SCAN = true;
 constexpr uint8_t MATRIX_DIAG_FORCE_ROW = 4;   // 0-based row index (4 => Row 5)
 constexpr uint8_t MATRIX_DIAG_FORCE_COL = 4;   // 0-based lamp column index (4 => L20)
 constexpr uint8_t MATRIX_DIAG_FORCE_PULSE_LEVEL = 10;
@@ -56,9 +58,9 @@ constexpr bool MATRIX_DIAG_HOLD_ROW_PULSE_COLUMN = false;
 constexpr uint32_t MATRIX_DIAG_COLUMN_PULSE_PERIOD_US = 3000;
 constexpr uint32_t MATRIX_DIAG_COLUMN_PULSE_ON_US = 2000;
 // Shift-register drive mapping (set from bench results).
-constexpr bool MATRIX_SR_CHAIN_IS_COL_THEN_ROW = false;
-constexpr bool MATRIX_SR_ROW_ACTIVE_LOW = true;
-constexpr bool MATRIX_SR_COL_ACTIVE_LOW = true;
+constexpr bool MATRIX_SR_CHAIN_IS_COL_THEN_ROW = true;
+constexpr bool MATRIX_SR_ROW_ACTIVE_LOW = false;
+constexpr bool MATRIX_SR_COL_ACTIVE_LOW = false;
 constexpr i2c_port_t MATRIX_I2C_PORT = I2C_NUM_0;
 constexpr size_t MATRIX_I2C_RX_BUFFER = 128;
 constexpr size_t MATRIX_I2C_TX_BUFFER = 128;
@@ -78,6 +80,11 @@ uint8_t lampPulseWidthLevel = CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL;
 // Default enabled for bench bring-up so lamps can respond without extra setup commands.
 bool matrixSystemEnabled = true;
 bool matrixOutputEnabled = true;
+uint32_t matrixI2CRxPacketCount = 0;
+uint32_t matrixLampWriteBurstCount = 0;
+uint32_t matrixLampWriteByteCount = 0;
+uint8_t matrixLastCommand = 0;
+uint32_t matrixLastLinkLogMs = 0;
 bool safeProofActive = false;
 uint64_t safeProofEndUs = 0;
 bool diagBootTestActive = false;
@@ -349,7 +356,7 @@ void initMatrixPins() {
     configureOutputPin(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SR_DATA_PIN), 0);
     configureOutputPin(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SR_CLOCK_PIN), 0);
     configureOutputPin(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SR_LATCH_PIN), 0);
-    // OE# is active-low; drive low so shift-register outputs are enabled.
+    // OE# is active-low. Set LOW (0) once at boot to enable shift-register outputs, leave alone forever.
     configureOutputPin(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SR_OE_N_PIN), 0);
 }
 
@@ -452,9 +459,22 @@ void refreshLampMatrixStep() {
 
     const uint8_t rowMask = static_cast<uint8_t>(1u << row);
     const uint8_t colMask = static_cast<uint8_t>(composeLampColumnShiftValue(row));
-    writeShiftRegister16(composeShiftFrame(rowMask, colMask));
+
+    // Phase B: row-only settle before enabling any lamp columns.
+    writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
     esp_rom_delay_us(MATRIX_ROW_SETTLE_US);
-    esp_rom_delay_us(appliedLampPulseWidthUs());
+
+    // Phase C: row + active columns pulse.
+    if (colMask != 0) {
+        writeShiftRegister16(composeShiftFrame(rowMask, colMask));
+        esp_rom_delay_us(appliedLampPulseWidthUs());
+
+        // Hold row after column pulse so row and column edges are cleanly separated on LA.
+        writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
+        esp_rom_delay_us(MATRIX_ROW_POST_HOLD_US);
+    }
+
+    // Phase D: all-off release.
     writeShiftRegister16(composeShiftFrame(0x00, 0x00));
 
     row = static_cast<uint8_t>((row + 1) % CAPTAIN_SWITCH_ROWS);
@@ -568,6 +588,7 @@ void handleI2CReceive(const uint8_t* packet, size_t length) {
 
     const uint8_t command = packet[0];
     registerPointer = command;
+    matrixLastCommand = command;
     const size_t payloadLength = length - 1;
 
     if ((command & 0xFEu) == CAPTAIN_MATRIX_CMD_SYSTEM_SETUP && payloadLength == 0) {
@@ -595,9 +616,15 @@ void handleI2CReceive(const uint8_t* packet, size_t length) {
     }
 
     if (captainMatrixLampRegister(command) && payloadLength > 0) {
+        uint8_t writeBytes = 0;
         uint8_t target = command;
         for (size_t index = 1; index < length && captainMatrixLampRegister(target); index++, target++) {
             lampRowRam[target - CAPTAIN_MATRIX_REG_LAMP_BASE] = static_cast<uint8_t>(packet[index]) & 0x1Fu;
+            writeBytes++;
+        }
+        if (writeBytes > 0) {
+            matrixLampWriteBurstCount++;
+            matrixLampWriteByteCount += writeBytes;
         }
     }
 
@@ -608,6 +635,7 @@ void serviceI2C() {
     uint8_t rxPacket[32] = {};
     const int bytesRead = i2c_slave_read_buffer(MATRIX_I2C_PORT, rxPacket, sizeof(rxPacket), 0);
     if (bytesRead > 0) {
+        matrixI2CRxPacketCount++;
         handleI2CReceive(rxPacket, static_cast<size_t>(bytesRead));
     }
 }
@@ -682,23 +710,27 @@ void logBootSummary() {
              static_cast<unsigned>(MATRIX_DIAG_BOOT_TEST_PULSE_LEVEL));
 }
 
-void logLoopHeartbeat() {
-    static uint32_t loopCounter = 0;
-    loopCounter++;
-    if ((loopCounter % 200) == 0) {
-        ESP_LOGI(TAG,
-                 "alive loops=%" PRIu32 " system=%u output=%u pulse=%u lamp=[%02X,%02X,%02X,%02X,%02X] sw0=0x%02X",
-                 loopCounter,
-                 matrixSystemEnabled ? 1u : 0u,
-                 matrixOutputEnabled ? 1u : 0u,
-                 static_cast<unsigned>(appliedLampPulseWidthUs()),
-                 lampRowRam[0],
-                 lampRowRam[1],
-                 lampRowRam[2],
-                 lampRowRam[3],
-                 lampRowRam[4],
-                 switchStateBytes[0]);
+void logLinkHeartbeat() {
+    const uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if ((nowMs - matrixLastLinkLogMs) < MATRIX_LINK_LOG_MS) {
+        return;
     }
+
+    matrixLastLinkLogMs = nowMs;
+    ESP_LOGI(TAG,
+             "link rx_pkts=%" PRIu32 " lamp_bursts=%" PRIu32 " lamp_bytes=%" PRIu32
+             " last_cmd=0x%02X pulse_us=%u lamp=[%02X,%02X,%02X,%02X,%02X] sw0=0x%02X",
+             matrixI2CRxPacketCount,
+             matrixLampWriteBurstCount,
+             matrixLampWriteByteCount,
+             static_cast<unsigned>(matrixLastCommand),
+             static_cast<unsigned>(appliedLampPulseWidthUs()),
+             lampRowRam[0],
+             lampRowRam[1],
+             lampRowRam[2],
+             lampRowRam[3],
+             lampRowRam[4],
+             switchStateBytes[0]);
 }
 }  // namespace
 
@@ -791,7 +823,7 @@ extern "C" void app_main(void) {
 
         refreshLampMatrixStep();
         updateOledStatus();
-        logLoopHeartbeat();
+        logLinkHeartbeat();
         // Always delay at least one RTOS tick so IDLE can run and feed the task watchdog.
         vTaskDelay(1);
     }
