@@ -1,10 +1,14 @@
 #ifdef CAPTAIN_MATRIX_BAREBONES
 
+#include <ctype.h>
 #include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
@@ -13,7 +17,7 @@
 
 namespace {
 constexpr char TAG[] = "mx_bare";
-constexpr char TEST_PROFILE_NAME[] = "phase1_control_driven_scan_2026_05_04";
+constexpr char TEST_PROFILE_NAME[] = "phase2_matrix_pattern_scan_2026_05_04";
 
 enum class BarebonesTestMode : uint8_t {
     Column595Isolation,
@@ -66,11 +70,24 @@ constexpr uint32_t TEST_BOOT_WINDOW_MS = 0;   // Run continuously
 // Row scan: blank -> row settle -> row+col pulse -> all-off -> next row.
 // Pulse width steps match the production formula (MIN + LEVEL * STEP).
 constexpr uint8_t CDS_LAMP_ROWS = 8;
-constexpr uint16_t CDS_ROW_BLANK_US  = 2000;   // Proven safe from bring-up baseline
-constexpr uint16_t CDS_ROW_SETTLE_US = 20000;  // Proven safe from bring-up baseline
+constexpr uint16_t CDS_ROW_BLANK_US  = 100;    // Fast scan blanking for persistence-of-vision
+constexpr uint16_t CDS_ROW_SETTLE_US = 100;    // Fast row settle for persistence-of-vision
 constexpr uint16_t CDS_PULSE_MIN_US  = 50;
 constexpr uint16_t CDS_PULSE_STEP_US = 50;
 constexpr uint8_t  CDS_PULSE_LEVEL   = 4;      // Default level 4 => 250 µs pulse (matches production default)
+constexpr uint16_t CDS_COLUMN_ON_US = 700;     // Slightly brighter fast multiplex on-time
+constexpr uint16_t CDS_ROW_POST_HOLD_US = 100; // Small row hold for clean phase separation
+constexpr bool CDS_ENABLE_SERIAL_CONTROL = false;
+constexpr uint32_t CDS_SERIAL_STATUS_LOG_MS = 1000;
+constexpr int CDS_UART_RX_BUFFER_SIZE = 256;
+constexpr bool CDS_ENABLE_SCRIPT_CONTROL = true;
+// Matrix pattern source: mirrors control_main.cpp::writeMatrixCommand().
+constexpr bool CDS_USE_MATRIX_CONTROL_PATTERN = true;
+constexpr uint32_t CDS_MATRIX_PATTERN_BLINK_MS = 350;
+// Optional fallback column-chase source.
+constexpr uint32_t CDS_ATTRACT_LOOP_PERIOD_MS = 1000;
+constexpr uint32_t CDS_ATTRACT_MIN_STEP_MS = 20;
+constexpr uint8_t CDS_ATTRACT_CHASE_LAPS = 1;
 // Initial test pattern: column 0 lit on every row so all rows show a visible lamp.
 // Set to 0 for fully dark; change per-row to test specific positions.
 constexpr uint8_t CDS_INITIAL_LAMP_RAM[CDS_LAMP_ROWS] = {
@@ -83,6 +100,55 @@ constexpr uint8_t CDS_INITIAL_LAMP_RAM[CDS_LAMP_ROWS] = {
     0x01,  // row 6: col 0 on
     0x01,  // row 7: col 0 on
 };
+
+void applyAttractFrame(uint32_t nowMs, uint8_t* lampRam) {
+    if (lampRam == nullptr) {
+        return;
+    }
+
+    constexpr uint8_t kCols = 5;
+    const uint8_t laps = (CDS_ATTRACT_CHASE_LAPS == 0) ? 1 : CDS_ATTRACT_CHASE_LAPS;
+    const uint32_t totalSlots = static_cast<uint32_t>(kCols) * laps;
+    const uint32_t slotMsRaw = CDS_ATTRACT_LOOP_PERIOD_MS / totalSlots;
+    const uint32_t slotMs = (slotMsRaw < CDS_ATTRACT_MIN_STEP_MS) ? CDS_ATTRACT_MIN_STEP_MS : slotMsRaw;
+    const uint32_t loopMs = slotMs * totalSlots;
+
+    const uint32_t phaseMs = nowMs % loopMs;
+    const uint32_t slotIndex = phaseMs / slotMs;
+    const uint32_t inSlotMs = phaseMs % slotMs;
+
+    (void)inSlotMs;
+    const uint8_t targetCol = static_cast<uint8_t>(slotIndex % kCols);
+    const uint8_t colMask = static_cast<uint8_t>(1u << targetCol);
+
+    // Drive one column across all rows so column activity is obvious on LA
+    // while still exercising multiplex row scanning at full speed.
+    for (uint8_t row = 0; row < CDS_LAMP_ROWS; row++) {
+        lampRam[row] = colMask;
+    }
+}
+
+void applyMatrixControlPattern(uint32_t nowMs, uint8_t* lampRam) {
+    if (lampRam == nullptr) {
+        return;
+    }
+
+    for (uint8_t row = 0; row < CDS_LAMP_ROWS; row++) {
+        lampRam[row] = 0x00;
+    }
+
+    // Base pattern from control_main.cpp::writeMatrixCommand().
+    lampRam[1] |= static_cast<uint8_t>(1u << 1); // row 1, col 1
+    lampRam[2] |= static_cast<uint8_t>(1u << 1); // row 2, col 1
+    lampRam[3] |= static_cast<uint8_t>(1u << 1); // row 3, col 1
+
+    const bool blink = ((nowMs / CDS_MATRIX_PATTERN_BLINK_MS) % 2u) != 0u;
+    if (blink) {
+        lampRam[4] |= static_cast<uint8_t>(1u << 1); // row 4, col 1
+        lampRam[2] |= static_cast<uint8_t>(1u << 3); // row 2, col 3
+        lampRam[5] |= static_cast<uint8_t>(1u << 3); // row 5, col 3
+    }
+}
 
 // Hardware mapping switches for quick A/B.
 constexpr bool SR_CHAIN_IS_COL_THEN_ROW = true;
@@ -355,15 +421,211 @@ void runControlDrivenScanLoop() {
         lampRam[i] = CDS_INITIAL_LAMP_RAM[i];
     }
 
+    auto trim = [](char* s) {
+        size_t n = strlen(s);
+        while (n > 0 && (s[n - 1] == '\r' || s[n - 1] == '\n' || isspace(static_cast<unsigned char>(s[n - 1])))) {
+            s[n - 1] = '\0';
+            n--;
+        }
+        size_t start = 0;
+        while (s[start] != '\0' && isspace(static_cast<unsigned char>(s[start]))) {
+            start++;
+        }
+        if (start > 0) {
+            memmove(s, s + start, strlen(s + start) + 1);
+        }
+    };
+
+    auto logLampRam = [&](const char* prefix) {
+        ESP_LOGI(TAG,
+                 "%s lamp_ram=[%02X %02X %02X %02X %02X %02X %02X %02X]",
+                 prefix,
+                 static_cast<unsigned>(lampRam[0]),
+                 static_cast<unsigned>(lampRam[1]),
+                 static_cast<unsigned>(lampRam[2]),
+                 static_cast<unsigned>(lampRam[3]),
+                 static_cast<unsigned>(lampRam[4]),
+                 static_cast<unsigned>(lampRam[5]),
+                 static_cast<unsigned>(lampRam[6]),
+                 static_cast<unsigned>(lampRam[7]));
+    };
+
+    auto printHelp = [&]() {
+        ESP_LOGI(TAG, "cds_cmds: SHOW | CLEAR | ALL <mask_hex> | ROW <row0_7> <mask_hex>");
+    };
+
+    auto parseMask = [](const char* token, uint8_t* outMask) -> bool {
+        if (token == nullptr || outMask == nullptr || token[0] == '\0') {
+            return false;
+        }
+
+        unsigned value = 0;
+        if ((token[0] == '0') && (token[1] == 'x' || token[1] == 'X')) {
+            if (sscanf(token, "%x", &value) != 1) {
+                return false;
+            }
+        } else {
+            // Treat unprefixed values as hex for convenience during bench work.
+            if (sscanf(token, "%x", &value) != 1) {
+                return false;
+            }
+        }
+
+        value &= 0x1Fu;
+        *outMask = static_cast<uint8_t>(value);
+        return true;
+    };
+
+    uint16_t columnOnUs = CDS_COLUMN_ON_US;
+    uint64_t lastStatusLogMs = 0;
+    char serialLine[96] = {};
+    size_t serialLen = 0;
+    bool serialControlActive = CDS_ENABLE_SERIAL_CONTROL;
+
     const uint16_t pulseUs = static_cast<uint16_t>(CDS_PULSE_MIN_US + CDS_PULSE_LEVEL * CDS_PULSE_STEP_US);
-    ESP_LOGI(TAG, "cds_start rows=%u blank_us=%u settle_us=%u pulse_us=%u",
+    ESP_LOGI(TAG, "cds_start rows=%u blank_us=%u settle_us=%u pulse_us=%u col_on_us=%u row_post_hold_us=%u",
              static_cast<unsigned>(CDS_LAMP_ROWS),
              static_cast<unsigned>(CDS_ROW_BLANK_US),
              static_cast<unsigned>(CDS_ROW_SETTLE_US),
-             static_cast<unsigned>(pulseUs));
+             static_cast<unsigned>(pulseUs),
+             static_cast<unsigned>(CDS_COLUMN_ON_US),
+             static_cast<unsigned>(CDS_ROW_POST_HOLD_US));
+    if (serialControlActive) {
+        if (!uart_is_driver_installed(UART_NUM_0)) {
+            const esp_err_t uartErr = uart_driver_install(UART_NUM_0, CDS_UART_RX_BUFFER_SIZE, 0, 0, nullptr, 0);
+            if (uartErr != ESP_OK) {
+                ESP_LOGW(TAG, "cds_serial disabled: uart_driver_install failed err=0x%x",
+                         static_cast<unsigned>(uartErr));
+                serialControlActive = false;
+            }
+        }
+    }
+
+    if (serialControlActive) {
+        printHelp();
+        logLampRam("cds_init");
+    } else {
+        ESP_LOGI(TAG, "cds_serial=disabled");
+    }
+    if (CDS_ENABLE_SCRIPT_CONTROL) {
+        ESP_LOGI(TAG,
+                 "cds_script enabled source=%s",
+                 CDS_USE_MATRIX_CONTROL_PATTERN ? "matrix_control_pattern" : "column_chase_fallback");
+        if (CDS_USE_MATRIX_CONTROL_PATTERN) {
+            ESP_LOGI(TAG, "cds_matrix_pattern blink_ms=%u", static_cast<unsigned>(CDS_MATRIX_PATTERN_BLINK_MS));
+        } else {
+            ESP_LOGI(TAG,
+                     "cds_attract loop_ms=%u min_step_ms=%u laps=%u",
+                     static_cast<unsigned>(CDS_ATTRACT_LOOP_PERIOD_MS),
+                     static_cast<unsigned>(CDS_ATTRACT_MIN_STEP_MS),
+                     static_cast<unsigned>(CDS_ATTRACT_CHASE_LAPS));
+        }
+        logLampRam("cds_script_init");
+    }
 
     uint8_t row = 0;
     while (true) {
+        if (serialControlActive) {
+            uint8_t rx = 0;
+            while (true) {
+                const int readResult = uart_read_bytes(UART_NUM_0, &rx, 1, 0);
+                if (readResult < 0) {
+                    ESP_LOGW(TAG, "cds_serial disabled: uart_read_bytes error=%d", readResult);
+                    serialControlActive = false;
+                    break;
+                }
+                if (readResult == 0) {
+                    break;
+                }
+
+                if (rx == '\r' || rx == '\n') {
+                    if (serialLen == 0) {
+                        continue;
+                    }
+
+                    serialLine[serialLen] = '\0';
+                    trim(serialLine);
+
+                    if (serialLine[0] != '\0') {
+                        if (strcasecmp(serialLine, "SHOW") == 0) {
+                            logLampRam("cds_show");
+                        } else if (strcasecmp(serialLine, "CLEAR") == 0) {
+                            for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
+                                lampRam[i] = 0x00;
+                            }
+                            logLampRam("cds_clear");
+                        } else {
+                            char cmd[16] = {};
+                            char arg1[16] = {};
+                            char arg2[16] = {};
+                            const int tokenCount = sscanf(serialLine, "%15s %15s %15s", cmd, arg1, arg2);
+
+                            if (tokenCount >= 2 && strcasecmp(cmd, "ALL") == 0) {
+                                uint8_t mask = 0;
+                                if (parseMask(arg1, &mask)) {
+                                    for (uint8_t i = 0; i < CDS_LAMP_ROWS; i++) {
+                                        lampRam[i] = mask;
+                                    }
+                                    logLampRam("cds_all");
+                                } else {
+                                    ESP_LOGW(TAG, "cds_cmd invalid mask: %s", arg1);
+                                }
+                            } else if (tokenCount >= 3 && strcasecmp(cmd, "ROW") == 0) {
+                                unsigned rowIndex = 0;
+                                uint8_t mask = 0;
+                                if (sscanf(arg1, "%u", &rowIndex) == 1 && rowIndex < CDS_LAMP_ROWS &&
+                                    parseMask(arg2, &mask)) {
+                                    lampRam[rowIndex] = mask;
+                                    ESP_LOGI(TAG, "cds_row_set row=%u mask=0x%02X", rowIndex,
+                                             static_cast<unsigned>(mask));
+                                } else {
+                                    ESP_LOGW(TAG, "cds_cmd invalid ROW args: %s %s", arg1, arg2);
+                                }
+                            } else if (tokenCount >= 2 && strcasecmp(cmd, "ONUS") == 0) {
+                                unsigned onUs = 0;
+                                if (sscanf(arg1, "%u", &onUs) == 1 && onUs >= 500 && onUs <= 50000) {
+                                    columnOnUs = static_cast<uint16_t>(onUs);
+                                    ESP_LOGI(TAG, "cds_onus=%u", onUs);
+                                } else {
+                                    ESP_LOGW(TAG, "cds_cmd invalid ONUS: %s (allowed 500..50000)", arg1);
+                                }
+                            } else if (strcasecmp(serialLine, "HELP") == 0) {
+                                printHelp();
+                            } else {
+                                ESP_LOGW(TAG, "cds_cmd unknown: %s", serialLine);
+                                printHelp();
+                            }
+                        }
+                    }
+
+                    serialLen = 0;
+                    continue;
+                }
+
+                if (serialLen < sizeof(serialLine) - 1) {
+                    serialLine[serialLen++] = static_cast<char>(rx);
+                } else {
+                    serialLen = 0;
+                }
+            }
+
+            const uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000ULL);
+            if ((nowMs - lastStatusLogMs) >= CDS_SERIAL_STATUS_LOG_MS) {
+                lastStatusLogMs = nowMs;
+                ESP_LOGI(TAG, "cds_status row=%u on_us=%u", static_cast<unsigned>(row),
+                         static_cast<unsigned>(columnOnUs));
+            }
+        }
+
+        if (CDS_ENABLE_SCRIPT_CONTROL) {
+            const uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000ULL);
+            if (CDS_USE_MATRIX_CONTROL_PATTERN) {
+                applyMatrixControlPattern(static_cast<uint32_t>(nowMs), lampRam);
+            } else {
+                applyAttractFrame(static_cast<uint32_t>(nowMs), lampRam);
+            }
+        }
+
         // Phase A: all-off blank before every row transition.
         writeShiftRegister16(composeShiftFrame(0x00, 0x00));
         delayUsCooperative(CDS_ROW_BLANK_US);
@@ -377,7 +639,12 @@ void runControlDrivenScanLoop() {
         const uint8_t colMask = lampRam[row] & 0x1Fu;
         if (colMask != 0) {
             writeShiftRegister16(composeShiftFrame(rowMask, colMask));
-            delayUsCooperative(pulseUs);
+            delayUsCooperative(columnOnUs);
+
+            // Hold row after column pulse so LA clearly shows row does not drop
+            // at the same instant as column activity.
+            writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
+            delayUsCooperative(CDS_ROW_POST_HOLD_US);
         }
 
         // Phase D: all-off release after pulse.
