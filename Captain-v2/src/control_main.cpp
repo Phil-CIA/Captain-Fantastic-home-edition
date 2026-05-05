@@ -26,6 +26,7 @@ constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
 constexpr uint32_t MATRIX_TEST_BLINK_MS = 500;
+constexpr bool MATRIX_TEST_BLINK_ENABLED = false;
 constexpr bool VERBOSE_SWITCH_EVENT_LOGS = false;
 constexpr bool VERBOSE_SOLENOID_LOGS = false;
 constexpr bool VERBOSE_DIRECT_INPUT_LOGS = false;
@@ -801,8 +802,8 @@ bool writeMatrixCommand(uint32_t now) {
 
     // Matrix link bring-up pattern (same quartet validated on matrix barebones):
     // L2  (row2,col1), L7  (row2,col3), L10 (row3,col3), L20 (row4,col4)
-    // Blink together at 500ms so link activity is obvious.
-    const bool lampsOn = ((now / MATRIX_TEST_BLINK_MS) % 2u) != 0u;
+    // Keep steady by default; blink can be re-enabled for diagnostics.
+    const bool lampsOn = !MATRIX_TEST_BLINK_ENABLED || (((now / MATRIX_TEST_BLINK_MS) % 2u) != 0u);
     if (lampsOn) {
         lampRows[2] |= captainMatrixLampRowMask(1);
         lampRows[2] |= captainMatrixLampRowMask(3);
