@@ -390,9 +390,15 @@ uint16_t composeLampColumnShiftValue(uint8_t row) {
     return static_cast<uint16_t>(lampRowRam[row] & 0x1Fu);
 }
 
+// Logical col0 is unused/not wired. Shift logical cols 1..4 down to physical bits 0..3.
+static inline uint8_t remapLogicalToPhysicalCols(uint8_t logicalColMask) {
+    return static_cast<uint8_t>((logicalColMask >> 1) & 0x0Fu);
+}
+
 uint16_t composeShiftFrame(uint8_t rowMask, uint8_t colMask) {
     const uint8_t rowOut = MATRIX_SR_ROW_ACTIVE_LOW ? static_cast<uint8_t>(~rowMask) : rowMask;
-    const uint8_t colOut = MATRIX_SR_COL_ACTIVE_LOW ? static_cast<uint8_t>(~colMask) : colMask;
+    const uint8_t physColMask = remapLogicalToPhysicalCols(colMask);
+    const uint8_t colOut = MATRIX_SR_COL_ACTIVE_LOW ? static_cast<uint8_t>(~physColMask) : physColMask;
 
     if (MATRIX_SR_CHAIN_IS_COL_THEN_ROW) {
         // Shift [col][row] so the first byte lands on downstream register.

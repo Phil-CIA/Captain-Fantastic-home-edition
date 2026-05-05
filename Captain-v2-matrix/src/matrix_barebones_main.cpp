@@ -17,16 +17,17 @@
 
 namespace {
 constexpr char TAG[] = "mx_bare";
-constexpr char TEST_PROFILE_NAME[] = "phase2_matrix_pattern_scan_2026_05_04";
+constexpr char TEST_PROFILE_NAME[] = "phase6_playfield_lamps_only_2026_05_05";
 
 enum class BarebonesTestMode : uint8_t {
     Column595Isolation,
     LegacyPhasedModel,
     SingleLampPulse,
-    ControlDrivenScan,  // Phase 1: canonical runtime sequence, lamp state from lampRowRam[]
+    ControlDrivenScan,      // Phase 1: canonical runtime sequence, lamp state from lampRowRam[]
+    TargetLampSequence,     // Phase 3: sequential single-lamp walk of specific target lamps
 };
 
-constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::ControlDrivenScan;
+constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::TargetLampSequence;
 
 // Master arm switch.
 // Keep false while wiring/checking; set true to run active bench patterns.
@@ -64,6 +65,62 @@ constexpr uint32_t TEST_WALK_ROW_SETTLE_US = 20000;
 constexpr uint32_t TEST_PERIOD_US = 1000000;  // 1.0 s per lamp step for faster troubleshooting
 constexpr uint32_t TEST_ON_US = 180000;       // Reduced ON time to protect bulbs during stabilization
 constexpr uint32_t TEST_BOOT_WINDOW_MS = 0;   // Run continuously
+
+// ---------------------------------------------------------------------------
+// Phase 3: TargetLampSequence — sequential single-lamp walk of named targets.
+//
+// Lamps are taken from captain_mapping.h CAPTAIN_LAMP_NAMES[row][col]:
+//   L2  B              : row 2, col 1
+//   L13 7K Bonus       : row 3, col 2
+//   L22 Return Lane R  : row 0, col 4
+//
+// Each lamp gets a 4-phase cycle: blank → row settle → row+col dwell → all-off.
+// The inter-lamp gap provides a clear separator on the logic analyzer.
+// ---------------------------------------------------------------------------
+constexpr uint32_t TARGET_SEQ_DWELL_MS       = 500;    // Lamp-on dwell per lamp (0.5 s)
+constexpr uint32_t TARGET_SEQ_BLANK_US       = 2000;   // All-off blank before row step
+constexpr uint32_t TARGET_SEQ_ROW_SETTLE_US  = 20000;  // Row-only settle before column
+constexpr uint32_t TARGET_SEQ_INTER_LAMP_US  = 200000; // All-off gap between lamp steps
+
+struct TargetLampEntry {
+    uint8_t     row;
+    uint8_t     col;
+    const char* name;
+};
+
+// Target lamps for this test phase (row and col are 0-based indices into lamp RAM).
+// Col 0 is unused/not wired (maps to physical 0x00 after remap), so all entries use col 1-4.
+// Ball (B1-B5), Player (P1-P4), and Game Over are driven by the control board — excluded here.
+constexpr TargetLampEntry kTargetLamps[] = {
+    // Row 0
+    {0, 2, "L12_8K_Bonus"},
+    {0, 3, "L11_9K_Bonus"},
+    {0, 4, "L22_Return_Lane_R"},
+    // Row 1
+    {1, 1, "L1_A"},
+    {1, 2, "L14_6K_Bonus"},
+    {1, 3, "L6_Target1"},
+    {1, 4, "L19_1K_Bonus"},
+    // Row 2
+    {2, 1, "L2_B"},
+    {2, 2, "L15_5K_Bonus"},
+    {2, 3, "L7_Double_Bonus"},
+    {2, 4, "L21_Return_Lane_L"},
+    // Row 3
+    {3, 1, "L3_C"},
+    {3, 2, "L13_7K_Bonus"},
+    {3, 3, "L10_10K_Bonus"},
+    {3, 4, "L18_2K_Bonus"},
+    // Row 4
+    {4, 1, "L4_D"},
+    {4, 2, "L17_3K_Bonus"},
+    {4, 3, "L9_Target2"},
+    {4, 4, "L20_Same_Player"},
+    // Row 5 (B5 excluded — control board)
+    {5, 1, "L5_Target3"},
+    {5, 2, "L16_4K_Bonus"},
+    {5, 3, "L8_Triple_Bonus"},
+};
 
 // ControlDrivenScan mode: canonical runtime sequence from lampRowRam[]
 // Uses proven bring-up polarity (SR_CHAIN_IS_COL_THEN_ROW=true, active-high).
@@ -141,16 +198,19 @@ void applyMatrixControlPattern(uint32_t nowMs, uint8_t* lampRam) {
         lampRam[row] = 0x00;
     }
 
-    // Base pattern from control_main.cpp::writeMatrixCommand().
-    lampRam[1] |= static_cast<uint8_t>(1u << 1); // row 1, col 1
-    lampRam[2] |= static_cast<uint8_t>(1u << 1); // row 2, col 1
-    lampRam[3] |= static_cast<uint8_t>(1u << 1); // row 3, col 1
+    // Phase 3 target lamps from captain_mapping.h:
+    //   L2  B              : row 2, col 1  (static)
+    //   L13 7K Bonus       : row 3, col 2  (static)
+    //   L22 Return Lane R  : row 0, col 4  (static)
+    lampRam[2] |= static_cast<uint8_t>(1u << 1);  // L2  B
+    lampRam[3] |= static_cast<uint8_t>(1u << 2);  // L13 7K Bonus
+    lampRam[0] |= static_cast<uint8_t>(1u << 4);  // L22 Return Lane R
 
+    // Blink L13 and L22 so they are easy to identify on a live lamp rail.
     const bool blink = ((nowMs / CDS_MATRIX_PATTERN_BLINK_MS) % 2u) != 0u;
-    if (blink) {
-        lampRam[4] |= static_cast<uint8_t>(1u << 1); // row 4, col 1
-        lampRam[2] |= static_cast<uint8_t>(1u << 3); // row 2, col 3
-        lampRam[5] |= static_cast<uint8_t>(1u << 3); // row 5, col 3
+    if (!blink) {
+        lampRam[3] &= static_cast<uint8_t>(~(1u << 2));  // L13 off
+        lampRam[0] &= static_cast<uint8_t>(~(1u << 4));  // L22 off
     }
 }
 
@@ -252,6 +312,11 @@ void delayUsCooperative(uint32_t delayUs) {
     }
 }
 
+// Logical col0 is unused/not wired. Shift logical cols 1..4 down to physical bits 0..3.
+static inline uint8_t remapLogicalToPhysicalCols(uint8_t logicalColMask) {
+    return static_cast<uint8_t>((logicalColMask >> 1) & 0x0Fu);
+}
+
 uint16_t composeShiftFrame(uint8_t rowMask, uint8_t colMask) {
     const uint8_t rowOut = SR_ROW_ACTIVE_LOW ? static_cast<uint8_t>(~rowMask) : rowMask;
     const uint8_t colOut = SR_COL_ACTIVE_LOW ? static_cast<uint8_t>(~colMask) : colMask;
@@ -296,8 +361,11 @@ void logConfig() {
                  ? "column_595_isolation"
                  : (TEST_MODE == BarebonesTestMode::LegacyPhasedModel
                         ? "legacy_phased_model"
-                        : (TEST_MODE == BarebonesTestMode::ControlDrivenScan ? "control_driven_scan"
-                                                                              : "single_lamp_pulse")),
+                        : (TEST_MODE == BarebonesTestMode::ControlDrivenScan
+                               ? "control_driven_scan"
+                               : (TEST_MODE == BarebonesTestMode::TargetLampSequence
+                                      ? "target_lamp_sequence"
+                                      : "single_lamp_pulse"))),
              TEST_FORCE_OE_LOW_WHEN_ENABLED ? 1u : 0u,
              static_cast<unsigned>(COLUMN_TEST_HOLD_MS),
              COLUMN_TEST_WALK_ALL_8_BITS ? 1u : 0u,
@@ -450,6 +518,70 @@ void runLegacyPhasedModelLoop() {
         }
     }
 }
+// ---------------------------------------------------------------------------
+// Phase 3: TargetLampSequence — sequential single-lamp walk.
+//
+// Iterates through kTargetLamps[], activating one lamp at a time with the
+// proven 4-phase sequence so each can be verified individually:
+//
+//   Phase A  all-off blank        TARGET_SEQ_BLANK_US
+//   Phase B  row-only settle      TARGET_SEQ_ROW_SETTLE_US
+//   Phase C  row + column dwell   TARGET_SEQ_DWELL_MS
+//   Phase D  all-off release      TARGET_SEQ_INTER_LAMP_US
+//
+// Serial log lines use "target_seq" tag for easy grep/scope trigger.
+// ---------------------------------------------------------------------------
+void runTargetLampSequenceLoop() {
+    constexpr size_t kLampCount = sizeof(kTargetLamps) / sizeof(kTargetLamps[0]);
+    const uint16_t offFrame = composeShiftFrame(0x00, 0x00);
+
+    ESP_LOGI(TAG,
+             "target_seq_start lamp_count=%u dwell_ms=%" PRIu32 " blank_us=%" PRIu32
+             " settle_us=%" PRIu32 " inter_us=%" PRIu32,
+             static_cast<unsigned>(kLampCount),
+             TARGET_SEQ_DWELL_MS,
+             TARGET_SEQ_BLANK_US,
+             TARGET_SEQ_ROW_SETTLE_US,
+             TARGET_SEQ_INTER_LAMP_US);
+
+    while (true) {
+        for (size_t i = 0; i < kLampCount; i++) {
+            const uint8_t rowMask        = static_cast<uint8_t>(1u << kTargetLamps[i].row);
+            const uint8_t logicalColMask  = static_cast<uint8_t>(1u << kTargetLamps[i].col);
+            const uint8_t colMask         = remapLogicalToPhysicalCols(logicalColMask);
+            const uint16_t rowOnlyFrame = composeShiftFrame(rowMask, 0x00);
+            const uint16_t lampFrame    = composeShiftFrame(rowMask, colMask);
+
+            ESP_LOGI(TAG,
+                     "target_seq lamp=%s row=%u col=%u row_frame=0x%04X lamp_frame=0x%04X",
+                     kTargetLamps[i].name,
+                     static_cast<unsigned>(kTargetLamps[i].row),
+                     static_cast<unsigned>(kTargetLamps[i].col),
+                     static_cast<unsigned>(rowOnlyFrame),
+                     static_cast<unsigned>(lampFrame));
+
+            // Phase A: all-off blank before row transition.
+            writeShiftRegister16(offFrame);
+            delayUsCooperative(TARGET_SEQ_BLANK_US);
+
+            // Phase B: row selected, columns off — let row driver settle.
+            writeShiftRegister16(rowOnlyFrame);
+            delayUsCooperative(TARGET_SEQ_ROW_SETTLE_US);
+
+            // Phase C: row + column on — lamp energised for dwell period.
+            writeShiftRegister16(lampFrame);
+            delayUsCooperative(TARGET_SEQ_DWELL_MS * 1000UL);
+
+            // Phase D: all off — inter-lamp gap.
+            writeShiftRegister16(offFrame);
+            delayUsCooperative(TARGET_SEQ_INTER_LAMP_US);
+        }
+
+        // Yield to RTOS watchdog once per full lamp cycle.
+        vTaskDelay(1);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1: ControlDrivenScan - canonical production sequence in barebones.
 //
@@ -761,6 +893,8 @@ extern "C" void app_main(void) {
         runLegacyPhasedModelLoop();
     } else if (TEST_MODE == BarebonesTestMode::ControlDrivenScan) {
         runControlDrivenScanLoop();
+    } else if (TEST_MODE == BarebonesTestMode::TargetLampSequence) {
+        runTargetLampSequenceLoop();
     } else {
         runSingleLampPulseLoop();
     }
