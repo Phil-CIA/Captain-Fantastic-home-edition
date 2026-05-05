@@ -830,12 +830,13 @@ extern "C" void app_main(void) {
         refreshLampMatrixStep();
         updateOledStatus();
         logLinkHeartbeat();
-        // Yield to IDLE every 250 refresh steps (~1.3s between 10ms gaps) so the
-        // task watchdog is fed without creating a visible dark gap on LEDs.
+        // Yield to IDLE on a wall-clock cadence so watchdog feeding does not depend
+        // on scan workload (lit-row count changes loop timing).
         {
-            static uint16_t yieldCycle = 0;
-            if (++yieldCycle >= 250u) {
-                yieldCycle = 0;
+            static uint64_t lastIdleYieldUs = 0;
+            const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+            if ((nowUs - lastIdleYieldUs) >= 2000000ULL) {
+                lastIdleYieldUs = nowUs;
                 vTaskDelay(1);
             }
         }
