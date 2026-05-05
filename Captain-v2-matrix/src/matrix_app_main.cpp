@@ -830,8 +830,15 @@ extern "C" void app_main(void) {
         refreshLampMatrixStep();
         updateOledStatus();
         logLinkHeartbeat();
-        // Always delay at least one RTOS tick so IDLE can run and feed the task watchdog.
-        vTaskDelay(1);
+        // Yield to IDLE every 250 refresh steps (~1.3s between 10ms gaps) so the
+        // task watchdog is fed without creating a visible dark gap on LEDs.
+        {
+            static uint16_t yieldCycle = 0;
+            if (++yieldCycle >= 250u) {
+                yieldCycle = 0;
+                vTaskDelay(1);
+            }
+        }
     }
 }
 
