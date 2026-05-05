@@ -67,7 +67,9 @@ constexpr size_t MATRIX_I2C_TX_BUFFER = 128;
 constexpr uint32_t OLED_SW_I2C_DELAY_US = 4;
 constexpr uint8_t OLED_I2C_SDA_PIN = 7;
 constexpr uint8_t OLED_I2C_SCL_PIN = 6;
-constexpr bool CAPTAIN_MATRIX_ENABLE_OLED_DIAGNOSTICS = true;
+// OLED drawing is bit-banged and can pause scan refresh for ~100ms bursts.
+// Disable during lamp bring-up to keep row/column timing continuous.
+constexpr bool CAPTAIN_MATRIX_ENABLE_OLED_DIAGNOSTICS = false;
 constexpr uint8_t OLED_ADDR_A = 0x3C;
 constexpr uint8_t OLED_ADDR_B = 0x3D;
 
@@ -111,6 +113,11 @@ uint8_t guardedBootTestColumn() {
 uint16_t appliedLampPulseWidthUs() {
     return static_cast<uint16_t>(MATRIX_LAMP_PULSE_MIN_US +
                                  static_cast<uint16_t>(lampPulseWidthLevel) * MATRIX_LAMP_PULSE_STEP_US);
+}
+
+inline void delayWallUs(uint32_t delayUs) {
+    const int64_t endUs = esp_timer_get_time() + static_cast<int64_t>(delayUs);
+    while (esp_timer_get_time() < endUs) {}
 }
 
 void configureOutputPin(gpio_num_t pin, int initialLevel) {
@@ -456,7 +463,7 @@ void refreshLampMatrixStep() {
 
     // Enforce an explicit all-off phase before every row transition.
     writeShiftRegister16(composeShiftFrame(0x00, 0x00));
-    esp_rom_delay_us(MATRIX_ROW_BLANK_US);
+    delayWallUs(MATRIX_ROW_BLANK_US);
 
     if (!matrixSystemEnabled || !matrixOutputEnabled) {
         row = static_cast<uint8_t>((row + 1) % CAPTAIN_SWITCH_ROWS);
@@ -468,17 +475,16 @@ void refreshLampMatrixStep() {
 
     // Phase B: row-only settle before enabling any lamp columns.
     writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
-    esp_rom_delay_us(MATRIX_ROW_SETTLE_US);
+    delayWallUs(MATRIX_ROW_SETTLE_US);
 
-    // Phase C: row + active columns pulse.
-    if (colMask != 0) {
-        writeShiftRegister16(composeShiftFrame(rowMask, colMask));
-        esp_rom_delay_us(appliedLampPulseWidthUs());
+    // Phase C: row pulse window. Keep timing constant regardless of colMask so
+    // scan cadence does not vary with lamp pattern density.
+    writeShiftRegister16(composeShiftFrame(rowMask, colMask));
+    delayWallUs(appliedLampPulseWidthUs());
 
-        // Hold row after column pulse so row and column edges are cleanly separated on LA.
-        writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
-        esp_rom_delay_us(MATRIX_ROW_POST_HOLD_US);
-    }
+    // Hold row after pulse so row and column edges are cleanly separated on LA.
+    writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
+    delayWallUs(MATRIX_ROW_POST_HOLD_US);
 
     // Phase D: all-off release.
     writeShiftRegister16(composeShiftFrame(0x00, 0x00));
@@ -787,8 +793,20 @@ extern "C" void app_main(void) {
         lampPulseWidthLevel = MATRIX_DIAG_FORCE_PULSE_LEVEL;
     }
 
+    // I2C is serviced once per full 8-row scan cycle rather than before every row
+    // step. i2c_slave_read_buffer() acquires a mutex and copies the ring buffer;
+    // calling it 8x per cycle adds variable overhead that shifts row timing and
+    // shows as brightness variation across rows (flicker).
+    uint8_t i2cServiceRowCounter = 0;
+
     while (true) {
-        serviceI2C();
+        // Service I2C once per complete scan cycle (every CAPTAIN_SWITCH_ROWS steps).
+        if (i2cServiceRowCounter == 0) {
+            serviceI2C();
+        }
+        if (++i2cServiceRowCounter >= CAPTAIN_SWITCH_ROWS) {
+            i2cServiceRowCounter = 0;
+        }
 
         if (safeProofActive) {
             const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
