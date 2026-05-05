@@ -25,6 +25,7 @@ constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
+constexpr uint32_t MATRIX_TEST_BLINK_MS = 500;
 constexpr bool VERBOSE_SWITCH_EVENT_LOGS = false;
 constexpr bool VERBOSE_SOLENOID_LOGS = false;
 constexpr bool VERBOSE_DIRECT_INPUT_LOGS = false;
@@ -795,12 +796,19 @@ bool readMatrixDiagnostics(uint8_t* diagBytes) {
     return matrixReadRegisters(CAPTAIN_MATRIX_REG_DIAG_BASE, diagBytes, CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1);
 }
 
-bool writeMatrixCommand() {
+bool writeMatrixCommand(uint32_t now) {
     uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
-    // Fixed lamp path test set: L22 (row0,col4), L2 (row2,col1), L13 (row3,col2).
-    lampRows[0] |= captainMatrixLampRowMask(4);
-    lampRows[2] |= captainMatrixLampRowMask(1);
-    lampRows[3] |= captainMatrixLampRowMask(2);
+
+    // Matrix link bring-up pattern (same quartet validated on matrix barebones):
+    // L2  (row2,col1), L7  (row2,col3), L10 (row3,col3), L20 (row4,col4)
+    // Blink together at 500ms so link activity is obvious.
+    const bool lampsOn = ((now / MATRIX_TEST_BLINK_MS) % 2u) != 0u;
+    if (lampsOn) {
+        lampRows[2] |= captainMatrixLampRowMask(1);
+        lampRows[2] |= captainMatrixLampRowMask(3);
+        lampRows[3] |= captainMatrixLampRowMask(3);
+        lampRows[4] |= captainMatrixLampRowMask(4);
+    }
 
     const bool writeOk = matrixWriteRegisters(CAPTAIN_MATRIX_REG_LAMP_BASE, lampRows, sizeof(lampRows));
     if (!writeOk) {
@@ -951,7 +959,7 @@ void loop() {
                 initMatrixDevice();
             }
 
-            const bool writeOk = writeMatrixCommand();
+            const bool writeOk = writeMatrixCommand(now);
             if (writeOk) {
                 matrixWriteOkCount++;
             } else {
