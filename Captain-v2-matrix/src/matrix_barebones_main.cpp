@@ -17,7 +17,7 @@
 
 namespace {
 constexpr char TAG[] = "mx_bare";
-constexpr char TEST_PROFILE_NAME[] = "phase6_playfield_lamps_only_2026_05_05";
+constexpr char TEST_PROFILE_NAME[] = "phase8_multiplex_led_brightness_2026_05_05";
 
 enum class BarebonesTestMode : uint8_t {
     Column595Isolation,
@@ -27,7 +27,7 @@ enum class BarebonesTestMode : uint8_t {
     TargetLampSequence,     // Phase 3: sequential single-lamp walk of specific target lamps
 };
 
-constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::TargetLampSequence;
+constexpr BarebonesTestMode TEST_MODE = BarebonesTestMode::ControlDrivenScan;
 
 // Master arm switch.
 // Keep false while wiring/checking; set true to run active bench patterns.
@@ -132,7 +132,7 @@ constexpr uint16_t CDS_ROW_SETTLE_US = 100;    // Fast row settle for persistenc
 constexpr uint16_t CDS_PULSE_MIN_US  = 50;
 constexpr uint16_t CDS_PULSE_STEP_US = 50;
 constexpr uint8_t  CDS_PULSE_LEVEL   = 4;      // Default level 4 => 250 µs pulse (matches production default)
-constexpr uint16_t CDS_COLUMN_ON_US = 700;     // Slightly brighter fast multiplex on-time
+constexpr uint16_t CDS_COLUMN_ON_US = 350;     // LED at 18V: lower duty vs tungsten at full voltage
 constexpr uint16_t CDS_ROW_POST_HOLD_US = 100; // Small row hold for clean phase separation
 constexpr bool CDS_ENABLE_SERIAL_CONTROL = false;
 constexpr uint32_t CDS_SERIAL_STATUS_LOG_MS = 1000;
@@ -140,7 +140,7 @@ constexpr int CDS_UART_RX_BUFFER_SIZE = 256;
 constexpr bool CDS_ENABLE_SCRIPT_CONTROL = true;
 // Matrix pattern source: mirrors control_main.cpp::writeMatrixCommand().
 constexpr bool CDS_USE_MATRIX_CONTROL_PATTERN = true;
-constexpr uint32_t CDS_MATRIX_PATTERN_BLINK_MS = 350;
+constexpr uint32_t CDS_MATRIX_PATTERN_BLINK_MS = 500;
 // Contract emulator: model a row-byte register window at 0x00..0x07.
 // Scripted sources write here first; scan consumes lampRam copied from this window.
 constexpr bool CDS_ENABLE_CONTRACT_EMULATOR = true;
@@ -152,14 +152,14 @@ constexpr uint8_t CDS_ATTRACT_CHASE_LAPS = 1;
 // Initial test pattern: column 0 lit on every row so all rows show a visible lamp.
 // Set to 0 for fully dark; change per-row to test specific positions.
 constexpr uint8_t CDS_INITIAL_LAMP_RAM[CDS_LAMP_ROWS] = {
-    0x01,  // row 0: col 0 on
-    0x01,  // row 1: col 0 on
-    0x01,  // row 2: col 0 on
-    0x01,  // row 3: col 0 on
-    0x01,  // row 4: col 0 on
-    0x01,  // row 5: col 0 on
-    0x01,  // row 6: col 0 on
-    0x01,  // row 7: col 0 on
+    0x00,  // row 0: off
+    0x00,  // row 1: off
+    0x0A,  // row 2: L2(col1) + L7(col3)
+    0x08,  // row 3: L10(col3)
+    0x10,  // row 4: L20(col4)
+    0x00,  // row 5: off
+    0x00,  // row 6: off
+    0x00,  // row 7: off
 };
 
 void applyAttractFrame(uint32_t nowMs, uint8_t* lampRam) {
@@ -198,19 +198,17 @@ void applyMatrixControlPattern(uint32_t nowMs, uint8_t* lampRam) {
         lampRam[row] = 0x00;
     }
 
-    // Phase 3 target lamps from captain_mapping.h:
-    //   L2  B              : row 2, col 1  (static)
-    //   L13 7K Bonus       : row 3, col 2  (static)
-    //   L22 Return Lane R  : row 0, col 4  (static)
-    lampRam[2] |= static_cast<uint8_t>(1u << 1);  // L2  B
-    lampRam[3] |= static_cast<uint8_t>(1u << 2);  // L13 7K Bonus
-    lampRam[0] |= static_cast<uint8_t>(1u << 4);  // L22 Return Lane R
-
-    // Blink L13 and L22 so they are easy to identify on a live lamp rail.
+    // Brightness test lamps — all four on together, blinking as a group:
+    //   L2  B            : row 2, col 1
+    //   L7  Double Bonus : row 2, col 3
+    //   L10 10K Bonus    : row 3, col 3
+    //   L20 Same Player  : row 4, col 4
     const bool blink = ((nowMs / CDS_MATRIX_PATTERN_BLINK_MS) % 2u) != 0u;
-    if (!blink) {
-        lampRam[3] &= static_cast<uint8_t>(~(1u << 2));  // L13 off
-        lampRam[0] &= static_cast<uint8_t>(~(1u << 4));  // L22 off
+    if (blink) {
+        lampRam[2] |= static_cast<uint8_t>(1u << 1);  // L2  B
+        lampRam[2] |= static_cast<uint8_t>(1u << 3);  // L7  Double Bonus
+        lampRam[3] |= static_cast<uint8_t>(1u << 3);  // L10 10K Bonus
+        lampRam[4] |= static_cast<uint8_t>(1u << 4);  // L20 Same Player
     }
 }
 
@@ -319,7 +317,8 @@ static inline uint8_t remapLogicalToPhysicalCols(uint8_t logicalColMask) {
 
 uint16_t composeShiftFrame(uint8_t rowMask, uint8_t colMask) {
     const uint8_t rowOut = SR_ROW_ACTIVE_LOW ? static_cast<uint8_t>(~rowMask) : rowMask;
-    const uint8_t colOut = SR_COL_ACTIVE_LOW ? static_cast<uint8_t>(~colMask) : colMask;
+    const uint8_t physColMask = remapLogicalToPhysicalCols(colMask);
+    const uint8_t colOut = SR_COL_ACTIVE_LOW ? static_cast<uint8_t>(~physColMask) : physColMask;
 
     if (SR_CHAIN_IS_COL_THEN_ROW) {
         return static_cast<uint16_t>((static_cast<uint16_t>(colOut) << 8) | rowOut);
@@ -546,9 +545,8 @@ void runTargetLampSequenceLoop() {
 
     while (true) {
         for (size_t i = 0; i < kLampCount; i++) {
-            const uint8_t rowMask        = static_cast<uint8_t>(1u << kTargetLamps[i].row);
-            const uint8_t logicalColMask  = static_cast<uint8_t>(1u << kTargetLamps[i].col);
-            const uint8_t colMask         = remapLogicalToPhysicalCols(logicalColMask);
+            const uint8_t rowMask  = static_cast<uint8_t>(1u << kTargetLamps[i].row);
+            const uint8_t colMask  = static_cast<uint8_t>(1u << kTargetLamps[i].col);
             const uint16_t rowOnlyFrame = composeShiftFrame(rowMask, 0x00);
             const uint16_t lampFrame    = composeShiftFrame(rowMask, colMask);
 
@@ -867,9 +865,15 @@ void runControlDrivenScanLoop() {
 
         row = static_cast<uint8_t>((row + 1u) % CDS_LAMP_ROWS);
 
-        // Yield to RTOS once per full 8-row cycle so watchdog stays fed.
+        // Yield to RTOS watchdog once per 250 full cycles (~2s) to keep
+        // scan rate near 125 Hz. A 10ms vTaskDelay every 2s is invisible
+        // to LEDs (no thermal lag unlike tungsten).
         if (row == 0) {
-            vTaskDelay(1);
+            static uint16_t yieldCycle = 0;
+            if (++yieldCycle >= 250u) {
+                yieldCycle = 0;
+                vTaskDelay(1);
+            }
         }
     }
 }
