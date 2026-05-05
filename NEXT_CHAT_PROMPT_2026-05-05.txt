@@ -1,0 +1,37 @@
+Continue from END_OF_DAY_HANDOFF_2026-05-05.rmd.
+
+Active project:
+- Captain-v2-matrix/
+
+Target env and board:
+- Environment: captain_matrix_idf
+- Port: COM4
+
+Current confirmed baseline:
+- Deterministic wall-clock scan is in place and stable enough for continued bring-up.
+- OLED diagnostics are enabled and now use chunked non-blocking updates.
+- Display grid format is 8x4 lamps (left) + 8x4 switches (right), shared rows.
+- Residual timing artifact remains: about 20ms gap on LA and occasional post-gap ghosting.
+
+Hard constraints:
+1. Do not regress deterministic scan timing.
+2. Keep changes minimal and isolated.
+3. Change one timing/control variable at a time and validate on LA.
+4. If ghosting worsens, revert to previous stable point immediately.
+
+First actions next chat:
+1. Build and upload captain_matrix_idf to COM4.
+2. Capture LA for 3-5s and verify current ~20ms gap pattern.
+3. Identify dominant source of gap with focused A/B toggles:
+   - OLED chunk cadence/timing
+   - I2C service cadence
+   - any periodic logging/maintenance path
+4. If needed, test strict cycle-boundary OLED chunk scheduling.
+
+Likely files to inspect first:
+1. Captain-v2-matrix/src/matrix_app_main.cpp
+2. END_OF_DAY_HANDOFF_2026-05-05.rmd
+3. Captain-v2/include/captain_protocol.h
+
+Build/upload command:
+cd C:\CaptainMatrix; C:/Users/user/.platformio/penv/Scripts/platformio.exe run -e captain_matrix_idf -t upload --upload-port COM4 2>&1

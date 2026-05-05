@@ -19,8 +19,12 @@
 namespace {
 constexpr char TAG[] = "captain_matrix";
 constexpr uint32_t LOOP_DELAY_US = 5000;
-constexpr uint32_t OLED_REFRESH_MS = 250;
-constexpr uint32_t MATRIX_LINK_LOG_MS = 1000;
+// OLED page period (per matrix row/page). Full 8-page refresh time is 8x this value.
+constexpr uint32_t OLED_REFRESH_MS = 120;
+// Chunked OLED writes avoid long scan stalls that cause visible flicker.
+constexpr uint8_t OLED_DATA_CHUNK_BYTES = 8;
+constexpr uint32_t OLED_CHUNK_SPACING_US = 1200;
+constexpr uint32_t MATRIX_LINK_LOG_MS = 5000;
 constexpr uint16_t MATRIX_LAMP_PULSE_MIN_US = 100;
 constexpr uint16_t MATRIX_LAMP_PULSE_STEP_US = 100;
 constexpr uint16_t MATRIX_ROW_BLANK_US = 50;
@@ -64,12 +68,12 @@ constexpr bool MATRIX_SR_COL_ACTIVE_LOW = false;
 constexpr i2c_port_t MATRIX_I2C_PORT = I2C_NUM_0;
 constexpr size_t MATRIX_I2C_RX_BUFFER = 128;
 constexpr size_t MATRIX_I2C_TX_BUFFER = 128;
-constexpr uint32_t OLED_SW_I2C_DELAY_US = 4;
+constexpr uint32_t OLED_SW_I2C_DELAY_US = 1;  // ~250kHz; within SSD1306 400kHz spec
 constexpr uint8_t OLED_I2C_SDA_PIN = 7;
 constexpr uint8_t OLED_I2C_SCL_PIN = 6;
 // OLED drawing is bit-banged and can pause scan refresh for ~100ms bursts.
 // Disable during lamp bring-up to keep row/column timing continuous.
-constexpr bool CAPTAIN_MATRIX_ENABLE_OLED_DIAGNOSTICS = false;
+constexpr bool CAPTAIN_MATRIX_ENABLE_OLED_DIAGNOSTICS = true;
 constexpr uint8_t OLED_ADDR_A = 0x3C;
 constexpr uint8_t OLED_ADDR_B = 0x3D;
 
@@ -304,54 +308,87 @@ void updateOledStatus() {
         return;
     }
 
-    const uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
-    if ((nowMs - lastOledRefreshMs) < OLED_REFRESH_MS) {
+    // Non-blocking OLED update: prepare one page, then stream it in small chunks.
+    // This keeps each loop's OLED cost bounded so lamp scan timing stays stable.
+    // Left  64px = 4 lamp cols (logical 1..4), 16px per cell.
+    // Right 64px = 4 switch cols (0..3),       16px per cell.
+    // Solid 0xFF = on/closed; box outline 0x81 = off/open.
+    static bool pageTransferActive = false;
+    static uint8_t nextPage = 0;
+    static uint8_t chunkOffset = 0;
+    static uint64_t lastChunkUs = 0;
+    static uint8_t pageData[128] = {};
+
+    const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
+    const uint32_t nowMs = static_cast<uint32_t>(nowUs / 1000ULL);
+
+    if (!pageTransferActive) {
+        if ((nowMs - lastOledRefreshMs) < OLED_REFRESH_MS) {
+            return;
+        }
+        lastOledRefreshMs = nowMs;
+
+        const uint8_t matrixRow = nextPage;
+        memset(pageData, 0, sizeof(pageData));
+
+        // Left half: lamp columns 1..4 (skip logical col 0, not wired).
+        const uint8_t lampMask = (matrixRow < CAPTAIN_LAMP_ROWS) ? lampRowRam[matrixRow] : 0;
+        for (uint8_t ci = 0; ci < 4; ci++) {
+            const uint8_t lampCol = static_cast<uint8_t>(ci + 1);  // logical cols 1..4
+            const bool lit = (lampMask & captainMatrixLampRowMask(lampCol)) != 0;
+            const uint8_t x0 = static_cast<uint8_t>(ci * 16);
+            if (lit) {
+                for (uint8_t x = x0; x < x0 + 15; x++) pageData[x] = 0xFF;
+            } else {
+                pageData[x0]      = 0xFF;
+                for (uint8_t x = static_cast<uint8_t>(x0 + 1); x < x0 + 14; x++) pageData[x] = 0x81;
+                pageData[x0 + 14] = 0xFF;
+            }
+        }
+
+        // Right half: switch columns 0..3.
+        for (uint8_t ci = 0; ci < CAPTAIN_SWITCH_COLS; ci++) {
+            const bool closed = (matrixRow < CAPTAIN_SWITCH_ROWS) &&
+                                captainGetBit(switchStateBytes, captainSwitchBitIndex(matrixRow, ci));
+            const uint8_t x0 = static_cast<uint8_t>(64 + ci * 16);
+            if (closed) {
+                for (uint8_t x = x0; x < x0 + 15; x++) pageData[x] = 0xFF;
+            } else {
+                pageData[x0]      = 0xFF;
+                for (uint8_t x = static_cast<uint8_t>(x0 + 1); x < x0 + 14; x++) pageData[x] = 0x81;
+                pageData[x0 + 14] = 0xFF;
+            }
+        }
+
+        if (!oledWriteCommand(static_cast<uint8_t>(0xB0 + nextPage)) ||
+            !oledWriteCommand(0x00) ||
+            !oledWriteCommand(0x10)) {
+            oledReady = false;
+            return;
+        }
+
+        pageTransferActive = true;
+        chunkOffset = 0;
+        lastChunkUs = 0;
+    }
+
+    if ((nowUs - lastChunkUs) < OLED_CHUNK_SPACING_US) {
         return;
     }
-    lastOledRefreshMs = nowMs;
 
-    uint8_t page0[128] = {};
-    if (matrixSystemEnabled) {
-        for (uint8_t i = 2; i < 22; i++) page0[i] = 0x7E;
-    }
-    if (matrixOutputEnabled) {
-        for (uint8_t i = 26; i < 46; i++) page0[i] = 0x7E;
-    }
-    const uint8_t pulseBar = static_cast<uint8_t>((lampPulseWidthLevel * 30U) / 15U);
-    for (uint8_t i = 50; i < static_cast<uint8_t>(50 + pulseBar) && i < 80; i++) page0[i] = 0x7E;
-    if (switchStateBytes[0] != 0 || lampRowRam[0] != 0) {
-        for (uint8_t i = 84; i < 104; i++) page0[i] = 0x7E;
-    }
-
-    oledWriteCommand(0xB0);
-    oledWriteCommand(0x00);
-    oledWriteCommand(0x10);
-    if (!oledWriteData(page0, sizeof(page0))) {
+    const uint8_t bytesRemaining = static_cast<uint8_t>(128 - chunkOffset);
+    const uint8_t chunkBytes = (bytesRemaining < OLED_DATA_CHUNK_BYTES) ? bytesRemaining : OLED_DATA_CHUNK_BYTES;
+    if (!oledWriteData(&pageData[chunkOffset], chunkBytes)) {
         oledReady = false;
         return;
     }
 
-    for (uint8_t page = 1; page < 8; page++) {
-        uint8_t rowData[128] = {};
-        const uint8_t row = static_cast<uint8_t>(page - 1);
-        const uint8_t rowMask = lampRowRam[row];
+    chunkOffset = static_cast<uint8_t>(chunkOffset + chunkBytes);
+    lastChunkUs = nowUs;
 
-        for (uint8_t col = 0; col < CAPTAIN_LAMP_COLS; col++) {
-            const uint8_t x0 = static_cast<uint8_t>(4 + col * 24);
-            const uint8_t x1 = static_cast<uint8_t>(x0 + 18);
-            const bool on = (rowMask & captainMatrixLampRowMask(col)) != 0;
-            for (uint8_t x = x0; x < x1 && x < 128; x++) {
-                rowData[x] = on ? 0x7E : 0x42;
-            }
-        }
-
-        oledWriteCommand(static_cast<uint8_t>(0xB0 + page));
-        oledWriteCommand(0x00);
-        oledWriteCommand(0x10);
-        if (!oledWriteData(rowData, sizeof(rowData))) {
-            oledReady = false;
-            return;
-        }
+    if (chunkOffset >= 128) {
+        pageTransferActive = false;
+        nextPage = static_cast<uint8_t>((nextPage + 1) % 8);
     }
 }
 

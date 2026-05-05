@@ -1,0 +1,62 @@
+# End Of Day Handoff - 2026-05-05
+
+## Session stop point
+Major milestone locked: matrix scan is stable enough for continued integration work, with OLED diagnostics re-enabled using chunked non-blocking updates.
+
+Current observed behavior:
+- Previous large OLED-induced scan dropout was reduced significantly.
+- Residual gap remains at about 20 ms on LA, but currently acceptable for this checkpoint.
+- Some post-gap ghosting is still occasionally visible and remains an open tuning item.
+
+## Firmware state at this checkpoint
+
+Active project:
+- `Captain-v2-matrix/`
+
+Environment used:
+- `captain_matrix_idf`
+
+Board/port:
+- ESP32-C6 matrix board on COM4
+
+File changed today:
+- `Captain-v2-matrix/src/matrix_app_main.cpp`
+
+Key runtime changes in `matrix_app_main.cpp`:
+1. OLED diagnostics enabled again.
+2. OLED software I2C bit delay reduced from 4 us to 1 us.
+3. OLED diagnostics changed from blocking full-frame writes to chunked page streaming state machine.
+4. New chunk timing controls introduced:
+   - `OLED_REFRESH_MS = 120` (per-page cadence)
+   - `OLED_DATA_CHUNK_BYTES = 8`
+   - `OLED_CHUNK_SPACING_US = 1200`
+5. OLED pixel-grid layout retained:
+   - left half: 8x4 lamp view (logical lamp columns 1..4)
+   - right half: 8x4 switch view
+   - solid block for active/closed, boxed outline for inactive/open
+6. Link heartbeat interval currently set to 5000 ms.
+
+## Bench/LA summary
+- Deterministic scan structure remains intact (blank -> settle -> pulse -> post-hold -> release).
+- The previous severe OLED stall profile is no longer present.
+- Remaining artifact: approximately 20 ms scan gap; acceptable for now to continue broader behavior validation.
+
+## Upload/build status
+Most recent matrix runtime build+upload completed successfully:
+- `platformio run -e captain_matrix_idf -t upload --upload-port COM4`
+- Result: SUCCESS
+
+## Open items for next session
+1. Characterize the remaining ~20 ms gap source more precisely (confirm whether OLED chunk cadence, I2C service, or another periodic path is dominant).
+2. Investigate residual ghosting immediately after the gap.
+3. Optionally gate OLED chunk writes to a strict scan-cycle boundary if ghosting persists.
+4. Re-enable switch scan (`MATRIX_DIAG_SKIP_SWITCH_SCAN = false`) when ready, then verify no new scan instability.
+
+## Safe resume checklist
+1. Build and upload `captain_matrix_idf` to COM4.
+2. Confirm four known steady lamps from control board still behave as expected.
+3. Capture LA timing for at least 3-5 seconds with current firmware.
+4. If ghosting worsens, temporarily disable OLED diagnostics and compare A/B immediately.
+
+## Notes
+This is a valid milestone checkpoint and a good baseline for tomorrow's refinement pass.
