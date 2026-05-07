@@ -26,7 +26,9 @@ constexpr uint8_t CAPTAIN_MATRIX_CMD_OUTPUT_ENABLE = 0x01;
 constexpr uint8_t CAPTAIN_MATRIX_CMD_PULSE_WIDTH_BASE = 0xE0;
 constexpr uint8_t CAPTAIN_MATRIX_CMD_PULSE_WIDTH_MASK = 0x0F;
 
-constexpr uint8_t CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL = 3;
+// Startup default sent by control board: 6 => ~700us lamp pulse
+// (100us base + level*100us step in matrix firmware).
+constexpr uint8_t CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL = 6;
 
 #ifndef CAPTAIN_MATRIX_TEST_SUPPORT
 #define CAPTAIN_MATRIX_TEST_SUPPORT 0

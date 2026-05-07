@@ -1,4 +1,7 @@
 #include <Arduino.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include <Wire.h>
 #include <SPI.h>
 #include <WiFi.h>
@@ -25,11 +28,25 @@ constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
-constexpr uint32_t MATRIX_TEST_BLINK_MS = 500;
-constexpr bool MATRIX_TEST_BLINK_ENABLED = false;
-constexpr bool VERBOSE_SWITCH_EVENT_LOGS = false;
-constexpr bool VERBOSE_SOLENOID_LOGS = false;
-constexpr bool VERBOSE_DIRECT_INPUT_LOGS = false;
+constexpr uint32_t MATRIX_SWITCH_LOG_DEBOUNCE_MS = 250;
+constexpr uint32_t MATRIX_SWITCH_LOG_REPORT_MS = 1000;
+constexpr uint16_t MATRIX_SWITCH_LOG_MAX_PER_REPORT = 12;
+// Real gameplay: no more than 2-3 switches can close simultaneously (ball hits multiple targets).
+// Scan transients appear as 5-28 edges per poll. Threshold of 4 passes genuine multi-switch
+// events while blocking all observed scan-induced bursts.
+constexpr uint8_t MATRIX_MAX_RISING_EDGES_PER_POLL = 4;
+constexpr BaseType_t CONTROL_TASK_CORE = 1;
+constexpr BaseType_t AUDIO_TASK_CORE = 0;
+constexpr UBaseType_t CONTROL_TASK_PRIORITY = 3;
+constexpr UBaseType_t AUDIO_TASK_PRIORITY = 2;
+constexpr uint32_t CONTROL_TASK_STACK_BYTES = 8192;
+constexpr uint32_t AUDIO_TASK_STACK_BYTES = 6144;
+constexpr uint8_t AUDIO_QUEUE_LENGTH = 16;
+
+struct AudioToneEvent {
+    uint16_t frequencyHz;
+    uint16_t durationMs;
+};
 
 uint32_t displayScore = 0;
 uint32_t lastDisplayUpdate = 0;
@@ -47,10 +64,6 @@ uint32_t i2sWriteErrors = 0;
 uint32_t i2sBytesWrittenTotal = 0;
 uint8_t audioBclkPinEffective = CAPTAIN_AUDIO_BCLK_PIN;
 uint8_t audioLrckPinEffective = CAPTAIN_AUDIO_LRCK_PIN;
-uint32_t lastAudioDiagnosticMs = 0;
-bool audioDiagnosticToneFlip = false;
-uint32_t lastAudioGpioPulseToggleMs = 0;
-bool audioGpioPulseState = false;
 bool heartbeatEnabled = false;
 bool heartbeatState = false;
 uint32_t lastHeartbeatToggleMs = 0;
@@ -74,6 +87,26 @@ uint32_t lastMatrixLinkSummaryMs = 0;
 uint8_t lastMatrixSwitch0 = 0;
 bool matrixSwitch0Seen = false;
 bool matrixDiagFaulted = false;
+uint32_t matrixSwitchLogSuppressedDebounce = 0;
+uint32_t matrixSwitchLogSuppressedRate = 0;
+uint32_t matrixSwitchSuppressedBurst = 0;
+uint16_t matrixSwitchLoggedThisWindow = 0;
+uint16_t matrixSwitchEdgesThisWindow = 0;
+uint32_t matrixSwitchLogWindowStartMs = 0;
+QueueHandle_t audioToneQueue = nullptr;
+TaskHandle_t controlTaskHandle = nullptr;
+TaskHandle_t audioTaskHandle = nullptr;
+bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
+    if (!i2sAudioReady || CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE || audioToneQueue == nullptr) {
+        return false;
+    }
+
+    AudioToneEvent event = {frequencyHz, durationMs};
+    if (xQueueSend(audioToneQueue, &event, 0) == pdPASS) {
+        return true;
+    }
+    return false;
+}
 
 void updateHeadboxLamps(uint16_t pattern);
 
@@ -162,7 +195,7 @@ void logMatrixLinkSummary(uint32_t now) {
     }
 
     lastMatrixLinkSummaryMs = now;
-    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X\n",
+    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu\n",
                   matrixDeviceReady ? 1u : 0u,
                   matrixLinkFaulted ? 1u : 0u,
                   static_cast<unsigned long>(matrixWriteOkCount),
@@ -170,7 +203,24 @@ void logMatrixLinkSummary(uint32_t now) {
                   static_cast<unsigned long>(matrixReadOkCount),
                   static_cast<unsigned long>(matrixReadFailCount),
                   static_cast<unsigned long>(matrixDiagWarnCount),
-                  static_cast<unsigned>(lastMatrixSwitch0));
+                  static_cast<unsigned>(lastMatrixSwitch0),
+                  static_cast<unsigned>(matrixSwitchEdgesThisWindow),
+                  static_cast<unsigned>(matrixSwitchLoggedThisWindow),
+                  static_cast<unsigned long>(matrixSwitchLogSuppressedDebounce),
+                  static_cast<unsigned long>(matrixSwitchLogSuppressedRate));
+
+    if (matrixSwitchSuppressedBurst > 0) {
+        Serial.printf("Matrix switch burst filter: dropped=%lu (max rising edges per poll=%u)\n",
+                      static_cast<unsigned long>(matrixSwitchSuppressedBurst),
+                      static_cast<unsigned>(MATRIX_MAX_RISING_EDGES_PER_POLL));
+    }
+
+    matrixSwitchEdgesThisWindow = 0;
+    matrixSwitchLoggedThisWindow = 0;
+    matrixSwitchLogSuppressedDebounce = 0;
+    matrixSwitchLogSuppressedRate = 0;
+    matrixSwitchSuppressedBurst = 0;
+    matrixSwitchLogWindowStartMs = now;
 }
 
 void updateOtaVisual(uint32_t now) {
@@ -182,32 +232,6 @@ void updateOtaVisual(uint32_t now) {
     otaVisualState = !otaVisualState;
     updateHeadboxLamps(otaVisualState ? 0xFFFF : 0x0000);
     updateLEDScore(otaVisualState ? 888888 : 0);
-}
-
-void runAudioPinSanityPulseTest() {
-    if (!CAPTAIN_AUDIO_PIN_SANITY_TEST) {
-        return;
-    }
-
-    Serial.println("Audio pin sanity: pulsing GPIO13 (LRCLK label)");
-    pinMode(CAPTAIN_AUDIO_LRCK_PIN, OUTPUT);
-    for (uint16_t i = 0; i < CAPTAIN_AUDIO_PIN_SANITY_PULSES; i++) {
-        digitalWrite(CAPTAIN_AUDIO_LRCK_PIN, HIGH);
-        delay(CAPTAIN_AUDIO_PIN_SANITY_PULSE_MS);
-        digitalWrite(CAPTAIN_AUDIO_LRCK_PIN, LOW);
-        delay(CAPTAIN_AUDIO_PIN_SANITY_PULSE_MS);
-    }
-
-    Serial.println("Audio pin sanity: pulsing GPIO14 (BCLK label)");
-    pinMode(CAPTAIN_AUDIO_BCLK_PIN, OUTPUT);
-    for (uint16_t i = 0; i < CAPTAIN_AUDIO_PIN_SANITY_PULSES; i++) {
-        digitalWrite(CAPTAIN_AUDIO_BCLK_PIN, HIGH);
-        delay(CAPTAIN_AUDIO_PIN_SANITY_PULSE_MS);
-        digitalWrite(CAPTAIN_AUDIO_BCLK_PIN, LOW);
-        delay(CAPTAIN_AUDIO_PIN_SANITY_PULSE_MS);
-    }
-
-    Serial.println("Audio pin sanity: complete");
 }
 
 void initWifiAndOta() {
@@ -361,45 +385,6 @@ bool flashProgramPage(uint32_t address, const uint8_t* data, size_t len) {
     return flashWaitBusy(1000);
 }
 
-void runExternalFlashSelfTest() {
-    if (!CAPTAIN_FLASH_ENABLE_RW_SELF_TEST) {
-        return;
-    }
-
-    Serial.printf("External flash self-test sector: 0x%06lX\n", static_cast<unsigned long>(CAPTAIN_FLASH_TEST_SECTOR_ADDR));
-
-    const uint8_t writePattern[16] = {
-        0xC1, 0x2A, 0x7F, 0x99,
-        0x10, 0x55, 0xAA, 0x3C,
-        0xD4, 0xE2, 0x19, 0x68,
-        0x77, 0x42, 0x0B, 0xF0
-    };
-    uint8_t readBack[16] = {};
-
-    if (!flashEraseSector4K(CAPTAIN_FLASH_TEST_SECTOR_ADDR)) {
-        Serial.println("External flash self-test FAILED: erase timeout");
-        return;
-    }
-
-    if (!flashProgramPage(CAPTAIN_FLASH_TEST_DATA_ADDR, writePattern, sizeof(writePattern))) {
-        Serial.println("External flash self-test FAILED: program timeout");
-        return;
-    }
-
-    flashReadBytes(CAPTAIN_FLASH_TEST_DATA_ADDR, readBack, sizeof(readBack));
-    if (memcmp(writePattern, readBack, sizeof(writePattern)) != 0) {
-        Serial.println("External flash self-test FAILED: verify mismatch");
-        return;
-    }
-
-    if (!flashEraseSector4K(CAPTAIN_FLASH_TEST_SECTOR_ADDR)) {
-        Serial.println("External flash self-test WARNING: cleanup erase timeout");
-        return;
-    }
-
-    Serial.println("External flash self-test PASSED (erase/program/read/verify/cleanup)");
-}
-
 void initExternalFlashProbe() {
     pinMode(CAPTAIN_FLASH_CS_PIN, OUTPUT);
     digitalWrite(CAPTAIN_FLASH_CS_PIN, HIGH);
@@ -424,7 +409,6 @@ void initExternalFlashProbe() {
 
     if (winbond && knownType && w25q128Capacity) {
         Serial.println("External flash OK: W25Q128 detected (16MB)");
-        runExternalFlashSelfTest();
     } else {
         Serial.println("External flash WARNING: unexpected JEDEC ID (check chip and wiring)");
     }
@@ -513,63 +497,6 @@ void playI2STestTone(uint16_t frequencyHz, uint16_t durationMs) {
     }
 }
 
-void runI2SDiagnostics() {
-    if (!i2sAudioReady) {
-        Serial.println("Audio diagnostics: I2S not ready");
-        return;
-    }
-
-    const uint32_t beforeCalls = i2sWriteCalls;
-    const uint32_t beforeErrors = i2sWriteErrors;
-    const uint32_t beforeBytes = i2sBytesWrittenTotal;
-
-    Serial.printf("Audio diagnostics: start (sampleRate=%luHz LRCK~%luHz)\n",
-                  static_cast<unsigned long>(CAPTAIN_AUDIO_SAMPLE_RATE),
-                  static_cast<unsigned long>(CAPTAIN_AUDIO_SAMPLE_RATE));
-
-    playI2STestTone(1000, 600);
-    delay(50);
-    playI2STestTone(700, 600);
-
-    const uint32_t deltaCalls = i2sWriteCalls - beforeCalls;
-    const uint32_t deltaErrors = i2sWriteErrors - beforeErrors;
-    const uint32_t deltaBytes = i2sBytesWrittenTotal - beforeBytes;
-
-    Serial.printf("Audio diagnostics: tx calls=%lu bytes=%lu errors=%lu\n",
-                  static_cast<unsigned long>(deltaCalls),
-                  static_cast<unsigned long>(deltaBytes),
-                  static_cast<unsigned long>(deltaErrors));
-    Serial.println("Audio diagnostics: if bytes>0 and errors=0, ESP32 is transmitting I2S data to amp DIN/BCLK/LRCK pins");
-}
-
-void updateContinuousAudioDiagnostic(uint32_t now) {
-    if (!CAPTAIN_AUDIO_CONTINUOUS_DIAGNOSTIC || !i2sAudioReady) {
-        return;
-    }
-
-    if (now - lastAudioDiagnosticMs < CAPTAIN_AUDIO_CONTINUOUS_INTERVAL_MS) {
-        return;
-    }
-    lastAudioDiagnosticMs = now;
-
-    audioDiagnosticToneFlip = !audioDiagnosticToneFlip;
-    const uint16_t frequency = audioDiagnosticToneFlip ? 1000 : 700;
-    playI2STestTone(frequency, CAPTAIN_AUDIO_CONTINUOUS_TONE_MS);
-}
-
-void updateAudioGpioOnlyPulseTest(uint32_t now) {
-    if (!CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE) {
-        return;
-    }
-
-    if (now - lastAudioGpioPulseToggleMs < CAPTAIN_AUDIO_GPIO_ONLY_HALF_PERIOD_MS) {
-        return;
-    }
-
-    lastAudioGpioPulseToggleMs = now;
-    audioGpioPulseState = !audioGpioPulseState;
-    digitalWrite(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN, audioGpioPulseState ? HIGH : LOW);
-}
 
 void playStartupMelody() {
     if (!i2sAudioReady || !CAPTAIN_AUDIO_STARTUP_TEST_ENABLED) {
@@ -611,9 +538,6 @@ void fireSolenoid(CaptainSolenoidId solenoidId) {
     digitalWrite(pin, HIGH);
     solenoidActive[solenoidId] = true;
     solenoidStartedAtMs[solenoidId] = millis();
-    if (VERBOSE_SOLENOID_LOGS) {
-        Serial.printf("Solenoid fired: %s (GPIO %u)\n", CAPTAIN_SOLENOID_NAMES[solenoidId], pin);
-    }
 }
 
 void updateSolenoidPulses(uint32_t now) {
@@ -639,32 +563,25 @@ bool readDirectInputActive(CaptainDirectInputId inputId) {
 }
 
 void onDirectInputPressed(CaptainDirectInputId inputId) {
-    if (VERBOSE_DIRECT_INPUT_LOGS) {
-        Serial.printf("Direct input pressed: %s (GPIO %u)\n", CAPTAIN_DIRECT_INPUT_NAMES[inputId], CAPTAIN_DIRECT_INPUT_PINS[inputId]);
-    }
-
     if (inputId == DIRECT_INPUT_START) {
         displayScore = 0;
         tiltLatched = false;
-        playI2STestTone(880, 80);
+        queueTone(880, 80);
     } else if (inputId == DIRECT_INPUT_TILT) {
         tiltLatched = true;
-        playI2STestTone(220, 120);
+        queueTone(220, 120);
     } else if (inputId == DIRECT_INPUT_SW1) {
         displayScore += 100;
         fireSolenoid(SOLENOID_S5);
-        playI2STestTone(660, 60);
+        queueTone(660, 60);
     } else if (inputId == DIRECT_INPUT_SW2) {
         displayScore += 100;
         fireSolenoid(SOLENOID_S6);
-        playI2STestTone(740, 60);
+        queueTone(740, 60);
     }
 }
 
 void onDirectInputReleased(CaptainDirectInputId inputId) {
-    if (VERBOSE_DIRECT_INPUT_LOGS) {
-        Serial.printf("Direct input released: %s (GPIO %u)\n", CAPTAIN_DIRECT_INPUT_NAMES[inputId], CAPTAIN_DIRECT_INPUT_PINS[inputId]);
-    }
 }
 
 void initDirectInputs() {
@@ -759,17 +676,42 @@ uint32_t scoreForSwitch(uint8_t row, uint8_t col) {
 }
 
 void handleSwitchEdges(const uint8_t* switchBits) {
+    const uint32_t nowMs = millis();
+    if (matrixSwitchLogWindowStartMs == 0 || (nowMs - matrixSwitchLogWindowStartMs) >= MATRIX_SWITCH_LOG_REPORT_MS) {
+        matrixSwitchLogWindowStartMs = nowMs;
+        matrixSwitchEdgesThisWindow = 0;
+        matrixSwitchLoggedThisWindow = 0;
+        matrixSwitchLogSuppressedDebounce = 0;
+        matrixSwitchLogSuppressedRate = 0;
+    }
+
+    uint8_t risingEdgesThisPoll = 0;
     for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
         for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
             const size_t bit = captainSwitchBitIndex(row, col);
             const bool previous = captainGetBit(previousSwitchBits, bit);
             const bool current = captainGetBit(switchBits, bit);
             if (!previous && current) {
+                risingEdgesThisPoll++;
+            }
+        }
+    }
+
+    // Ignore impossible bursts; they are scan/bus transients that would otherwise score and fire coils.
+    if (risingEdgesThisPoll > MATRIX_MAX_RISING_EDGES_PER_POLL) {
+        matrixSwitchSuppressedBurst++;
+        return;
+    }
+
+    for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
+        for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
+            const size_t bit = captainSwitchBitIndex(row, col);
+            const bool previous = captainGetBit(previousSwitchBits, bit);
+            const bool current = captainGetBit(switchBits, bit);
+            if (!previous && current) {
+                matrixSwitchEdgesThisWindow++;
                 const uint32_t points = scoreForSwitch(row, col);
                 displayScore += points;
-                if (VERBOSE_SWITCH_EVENT_LOGS) {
-                    Serial.printf("Switch M%u/SW%u: %s (+%lu)\n", row + 1, col + 1, captainSwitchName(row, col), static_cast<unsigned long>(points));
-                }
 
                 if (row == 0 && col == 0) {
                     fireSolenoid(SOLENOID_S2);
@@ -797,21 +739,97 @@ bool readMatrixDiagnostics(uint8_t* diagBytes) {
     return matrixReadRegisters(CAPTAIN_MATRIX_REG_DIAG_BASE, diagBytes, CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1);
 }
 
+// Matrix lamp attract: cycles through named lamp groups with a dark gap between each.
+// Groups (each CAPTAIN_MATRIX_ATTRACT_PHASE_MS long, separated by CAPTAIN_MATRIX_ATTRACT_BLANK_MS):
+//   0: lanes A-D   1: targets   2: low bonus 1K-5K   3: high bonus 6K-10K
+//   4: multipliers  5: return lanes + same-player   6: ball indicators   7: ALL lamps
+void computeMatrixAttractFrame(uint32_t now, uint8_t* lampRows) {
+    constexpr uint32_t slotMs   = CAPTAIN_MATRIX_ATTRACT_PHASE_MS + CAPTAIN_MATRIX_ATTRACT_BLANK_MS;
+    constexpr uint8_t  NUM_PHASES = 8;
+    constexpr uint32_t cycleMs  = slotMs * NUM_PHASES;
+
+    const uint32_t t       = now % cycleMs;
+    const uint8_t  phase   = static_cast<uint8_t>(t / slotMs);
+    const uint32_t inPhase = t % slotMs;
+
+    if (inPhase >= CAPTAIN_MATRIX_ATTRACT_PHASE_MS) {
+        return;  // dark gap — caller already zeroed lampRows
+    }
+
+    switch (phase) {
+        case 0: // Lane lamps: A, B, C, D
+            lampRows[1] |= captainMatrixLampRowMask(1);  // L1 A
+            lampRows[2] |= captainMatrixLampRowMask(1);  // L2 B
+            lampRows[3] |= captainMatrixLampRowMask(1);  // L3 C
+            lampRows[4] |= captainMatrixLampRowMask(1);  // L4 D
+            break;
+        case 1: // Target lamps: L5 T3, L6 T1, L9 T2
+            lampRows[5] |= captainMatrixLampRowMask(1);  // L5 Target 3
+            lampRows[1] |= captainMatrixLampRowMask(3);  // L6 Target 1
+            lampRows[4] |= captainMatrixLampRowMask(3);  // L9 Target 2
+            break;
+        case 2: // Low bonus: 1K-5K
+            lampRows[1] |= captainMatrixLampRowMask(4);  // L19 1K
+            lampRows[3] |= captainMatrixLampRowMask(4);  // L18 2K
+            lampRows[4] |= captainMatrixLampRowMask(2);  // L17 3K
+            lampRows[5] |= captainMatrixLampRowMask(2);  // L16 4K
+            lampRows[2] |= captainMatrixLampRowMask(2);  // L15 5K
+            break;
+        case 3: // High bonus: 6K-10K
+            lampRows[1] |= captainMatrixLampRowMask(2);  // L14 6K
+            lampRows[3] |= captainMatrixLampRowMask(2);  // L13 7K
+            lampRows[0] |= captainMatrixLampRowMask(2);  // L12 8K
+            lampRows[0] |= captainMatrixLampRowMask(3);  // L11 9K
+            lampRows[3] |= captainMatrixLampRowMask(3);  // L10 10K
+            break;
+        case 4: // Multiplier lamps: Double Bonus, Triple Bonus
+            lampRows[2] |= captainMatrixLampRowMask(3);  // L7 Double Bonus
+            lampRows[5] |= captainMatrixLampRowMask(3);  // L8 Triple Bonus
+            break;
+        case 5: // Return lanes + Same Player
+            lampRows[0] |= captainMatrixLampRowMask(4);  // L22 Return Lane R
+            lampRows[2] |= captainMatrixLampRowMask(4);  // L21 Return Lane L
+            lampRows[4] |= captainMatrixLampRowMask(4);  // L20 Same Player
+            break;
+        case 6: // Ball indicators: B1-B5
+            lampRows[6] |= captainMatrixLampRowMask(1);  // B1
+            lampRows[6] |= captainMatrixLampRowMask(2);  // B2
+            lampRows[6] |= captainMatrixLampRowMask(3);  // B3
+            lampRows[6] |= captainMatrixLampRowMask(4);  // B4
+            lampRows[5] |= captainMatrixLampRowMask(4);  // B5
+            break;
+        case 7: // ALL lamps — big flash
+            lampRows[0] = 0x1F;
+            for (uint8_t r = 1; r < CAPTAIN_LAMP_ROWS; r++) {
+                lampRows[r] = 0x1E;  // cols 1-4 (col 0 unused on rows 1-7)
+            }
+            break;
+    }
+}
+
 bool writeMatrixCommand(uint32_t now) {
     uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
 
-    // Matrix link bring-up pattern (same quartet validated on matrix barebones):
-    // L2  (row2,col1), L7  (row2,col3), L10 (row3,col3), L20 (row4,col4)
-    // Keep steady by default; blink can be re-enabled for diagnostics.
-    const bool lampsOn = !MATRIX_TEST_BLINK_ENABLED || (((now / MATRIX_TEST_BLINK_MS) % 2u) != 0u);
-    if (lampsOn) {
+    if (CAPTAIN_MATRIX_ATTRACT_ENABLED) {
+        computeMatrixAttractFrame(now, lampRows);
+    } else {
+        // Static bring-up test pattern: L2, L7, L10, L20
         lampRows[2] |= captainMatrixLampRowMask(1);
         lampRows[2] |= captainMatrixLampRowMask(3);
         lampRows[3] |= captainMatrixLampRowMask(3);
         lampRows[4] |= captainMatrixLampRowMask(4);
     }
 
-    const bool writeOk = matrixWriteRegisters(CAPTAIN_MATRIX_REG_LAMP_BASE, lampRows, sizeof(lampRows));
+    // Append XOR checksum so the matrix can discard I2C-corrupted frames.
+    uint8_t lampFrame[CAPTAIN_LAMP_ROWS + 1] = {};
+    uint8_t xorAcc = 0;
+    for (uint8_t i = 0; i < CAPTAIN_LAMP_ROWS; i++) {
+        lampFrame[i] = lampRows[i];
+        xorAcc ^= lampRows[i];
+    }
+    lampFrame[CAPTAIN_LAMP_ROWS] = xorAcc;
+
+    const bool writeOk = matrixWriteRegisters(CAPTAIN_MATRIX_REG_LAMP_BASE, lampFrame, sizeof(lampFrame));
     if (!writeOk) {
         matrixDeviceReady = false;
     }
@@ -887,21 +905,8 @@ void setup() {
     initSolenoids();
     initDirectInputs();
     initHeartbeat();
-    if (CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE) {
-        pinMode(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN, OUTPUT);
-        digitalWrite(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN, LOW);
-        Serial.printf("Audio GPIO-only test mode enabled: pulsing GPIO%u (half-period=%ums)\n",
-                      CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN,
-                      static_cast<unsigned>(CAPTAIN_AUDIO_GPIO_ONLY_HALF_PERIOD_MS));
-    } else {
-        runAudioPinSanityPulseTest();
-        initI2SAudio();
-        playStartupMelody();
-        runI2SDiagnostics();
-        if (CAPTAIN_AUDIO_CONTINUOUS_DIAGNOSTIC) {
-            Serial.println("Audio diagnostics: continuous test mode enabled");
-        }
-    }
+    initI2SAudio();
+    playStartupMelody();
     initExternalFlashProbe();
     initWifiAndOta();
     initMatrixDevice();
@@ -926,98 +931,133 @@ void setup() {
     Serial.printf("I2C bus: SDA=%u SCL=%u display=0x%02X matrix=0x%02X\n", CAPTAIN_I2C_SDA_PIN, CAPTAIN_I2C_SCL_PIN, CAPTAIN_DISPLAY_I2C_ADDRESS, CAPTAIN_MATRIX_I2C_ADDRESS);
     Serial.printf("External flash: W25Q128 SPI CS=%u MOSI=%u MISO=%u SCK=%u size=%lu bytes\n", CAPTAIN_FLASH_CS_PIN, CAPTAIN_FLASH_MOSI_PIN, CAPTAIN_FLASH_MISO_PIN, CAPTAIN_FLASH_SCK_PIN, static_cast<unsigned long>(CAPTAIN_FLASH_SIZE_BYTES));
     Serial.println("Captain v2 control board started");
-}
 
-void loop() {
-    static uint32_t lastPoll = 0;
-    const uint32_t now = millis();
-    updateHeartbeat(now);
-    updateSolenoidPulses(now);
-    processDirectInputs(now);
-
-    if (otaReady) {
-        ArduinoOTA.handle();
-    }
-
-    if (otaInProgress) {
-        updateOtaVisual(now);
-        return;
-    }
-
-    if (CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE) {
-        updateAudioGpioOnlyPulseTest(now);
-    } else {
-        updateContinuousAudioDiagnostic(now);
-    }
-
-    if (now - lastPoll >= POLL_MS) {
-        lastPoll = now;
-        if (CAPTAIN_HEADBOX_ATTRACT_LOOP) {
-            headboxPattern = updateHeadboxAttractLoop(now);
-            updateHeadboxLamps(headboxPattern);
-        } else {
-            if (!matrixDeviceReady) {
-                initMatrixDevice();
-            }
-
-            const bool writeOk = writeMatrixCommand(now);
-            if (writeOk) {
-                matrixWriteOkCount++;
-            } else {
-                matrixWriteFailCount++;
-            }
-
-            uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
-            const bool readOk = readMatrixSwitches(switchBits);
-            if (readOk) {
-                matrixReadOkCount++;
-                lastMatrixSwitch0 = switchBits[0];
-                matrixSwitch0Seen = true;
-            } else {
-                matrixReadFailCount++;
-            }
-            if (writeOk && readOk && !matrixLinkFaulted) {
-                handleSwitchEdges(switchBits);
-                matrixDeviceReady = true;
-            } else {
-                matrixDeviceReady = false;
-            }
-
-            if (now - lastMatrixDiagPollMs >= MATRIX_DIAG_POLL_MS) {
-                lastMatrixDiagPollMs = now;
-                uint8_t diagBytes[CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1] = {};
-                if (readMatrixDiagnostics(diagBytes)) {
-                    const uint8_t status = diagBytes[0];
-                    const bool systemEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_SYSTEM_ENABLED) != 0;
-                    const bool outputEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_OUTPUT_ENABLED) != 0;
-                    if (!systemEnabled || !outputEnabled) {
-                        matrixDiagWarnCount++;
-                        if (!matrixDiagFaulted) {
-                            matrixDiagFaulted = true;
-                            Serial.printf("Matrix diag warning: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
-                        }
-                    } else if (matrixDiagFaulted) {
-                        matrixDiagFaulted = false;
-                        Serial.printf("Matrix diag recovered: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
-                    }
-                } else {
-                    matrixDiagReadFailCount++;
-                    matrixDeviceReady = false;
-                }
-            }
-
-            const bool blink = ((now / 350) % 2) != 0;
-            headboxPattern = composeHeadboxPattern(displayScore, blink);
-            updateHeadboxLamps(headboxPattern);
-            if (!matrixSwitch0Seen) {
-                lastMatrixSwitch0 = 0;
-            }
-            logMatrixLinkSummary(now);
+    if (i2sAudioReady) {
+        audioToneQueue = xQueueCreate(AUDIO_QUEUE_LENGTH, sizeof(AudioToneEvent));
+        if (audioToneQueue == nullptr) {
+            Serial.println("Audio queue create failed; tones disabled at runtime");
         }
     }
 
-    if (now - lastDisplayUpdate >= 100) {
-        lastDisplayUpdate = now;
-        updateLEDScore(displayScore);
+    if (audioToneQueue != nullptr) {
+        xTaskCreatePinnedToCore(
+            [](void*) {
+                AudioToneEvent event = {};
+                for (;;) {
+                    if (xQueueReceive(audioToneQueue, &event, portMAX_DELAY) == pdPASS) {
+                        playI2STestTone(event.frequencyHz, event.durationMs);
+                    }
+                }
+            },
+            "captain_audio",
+            AUDIO_TASK_STACK_BYTES,
+            nullptr,
+            AUDIO_TASK_PRIORITY,
+            &audioTaskHandle,
+            AUDIO_TASK_CORE);
     }
+
+    xTaskCreatePinnedToCore(
+        [](void*) {
+            static uint32_t lastPoll = 0;
+            for (;;) {
+                const uint32_t now = millis();
+                updateHeartbeat(now);
+                updateSolenoidPulses(now);
+                processDirectInputs(now);
+
+                if (otaReady) {
+                    ArduinoOTA.handle();
+                }
+
+                if (otaInProgress) {
+                    updateOtaVisual(now);
+                    vTaskDelay(1);
+                    continue;
+                }
+
+                if (now - lastPoll >= POLL_MS) {
+                    lastPoll = now;
+                    if (CAPTAIN_HEADBOX_ATTRACT_LOOP) {
+                        headboxPattern = updateHeadboxAttractLoop(now);
+                        updateHeadboxLamps(headboxPattern);
+                    } else {
+                        if (!matrixDeviceReady) {
+                            initMatrixDevice();
+                        }
+
+                        const bool writeOk = writeMatrixCommand(now);
+                        if (writeOk) {
+                            matrixWriteOkCount++;
+                        } else {
+                            matrixWriteFailCount++;
+                        }
+
+                        uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
+                        const bool readOk = readMatrixSwitches(switchBits);
+                        if (readOk) {
+                            matrixReadOkCount++;
+                            lastMatrixSwitch0 = switchBits[0];
+                            matrixSwitch0Seen = true;
+                        } else {
+                            matrixReadFailCount++;
+                        }
+                        if (writeOk && readOk && !matrixLinkFaulted) {
+                            handleSwitchEdges(switchBits);
+                            matrixDeviceReady = true;
+                        } else {
+                            matrixDeviceReady = false;
+                        }
+
+                        if (now - lastMatrixDiagPollMs >= MATRIX_DIAG_POLL_MS) {
+                            lastMatrixDiagPollMs = now;
+                            uint8_t diagBytes[CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1] = {};
+                            if (readMatrixDiagnostics(diagBytes)) {
+                                const uint8_t status = diagBytes[0];
+                                const bool systemEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_SYSTEM_ENABLED) != 0;
+                                const bool outputEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_OUTPUT_ENABLED) != 0;
+                                if (!systemEnabled || !outputEnabled) {
+                                    matrixDiagWarnCount++;
+                                    if (!matrixDiagFaulted) {
+                                        matrixDiagFaulted = true;
+                                        Serial.printf("Matrix diag warning: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
+                                    }
+                                } else if (matrixDiagFaulted) {
+                                    matrixDiagFaulted = false;
+                                    Serial.printf("Matrix diag recovered: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
+                                }
+                            } else {
+                                matrixDiagReadFailCount++;
+                                matrixDeviceReady = false;
+                            }
+                        }
+
+                        const bool blink = ((now / 350) % 2) != 0;
+                        headboxPattern = composeHeadboxPattern(displayScore, blink);
+                        updateHeadboxLamps(headboxPattern);
+                        if (!matrixSwitch0Seen) {
+                            lastMatrixSwitch0 = 0;
+                        }
+                        logMatrixLinkSummary(now);
+                    }
+                }
+
+                if (now - lastDisplayUpdate >= 100) {
+                    lastDisplayUpdate = now;
+                    updateLEDScore(displayScore);
+                }
+
+                vTaskDelay(1);
+            }
+        },
+        "captain_ctrl",
+        CONTROL_TASK_STACK_BYTES,
+        nullptr,
+        CONTROL_TASK_PRIORITY,
+        &controlTaskHandle,
+        CONTROL_TASK_CORE);
+}
+
+void loop() {
+    vTaskDelay(portMAX_DELAY);
 }

@@ -17,3 +17,6 @@
 
 # Audio / media files (large binaries kept locally)
 *.m4a
+
+# Nested git repositories (separate projects cloned alongside)
+Pinball-Sw-Lamp-Matrix/
