@@ -1,0 +1,75 @@
+# End Of Day Handoff - 2026-05-10
+
+## Session Outcome
+
+Today ended with a stable matrix-control communication link, but switch isolation/mapping is still not clean enough to trust for gameplay logic.
+
+You were right to pause here.
+
+## What Was Completed
+
+1. Matrix board (COM4, ESP32-C6, ESP-IDF) is running the split protocol path successfully.
+2. Control board (COM5, ESP32) is successfully communicating with matrix at 0x24.
+3. Matrix board status RGB LED was implemented on dev-board onboard LED path (GPIO 8, WS2812 timing via native RMT).
+4. False red flashes were reduced by tightening error signaling:
+   - Red LED now tracks hard checksum-fail conditions (not benign merged-stream rejects).
+   - Lamp write reject handling was narrowed to malformed base-frame writes.
+5. Extended telemetry checks passed repeatedly:
+   - rx_pkts increasing on matrix
+   - wr_ok and rd_ok increasing on control
+   - lamp_chkfail steady at 0
+   - lamp_reject steady at 0 after parser adjustment
+6. A temporary control-side mapping mode was added:
+   - MATRIX_SWITCH_MAPPING_MODE = true in Captain-v2/src/control_main.cpp
+   - This forces lamp frame off during mapping attempts to reduce scan coupling noise.
+7. captain_control was built and uploaded to COM5 after that change.
+
+## Current Stable Truth
+
+1. Transport and protocol path are healthy and believable.
+2. Matrix link is ready and counter movement is consistent.
+3. Data-integrity alarms are no longer firing spuriously.
+4. The unresolved issue is switch isolation/noise, not I2C communications.
+
+## What Is Still Failing
+
+A/B mapping attempts (baseline vs repeated target-switch pressing) still fail to produce one dominant switch bit with acceptable separation.
+
+Observed pattern:
+- Multiple bits in sw0 rise in both baseline and press windows.
+- Press window does not produce enough signal separation over noise floor.
+- Burst filter dropped counts are still present, though improved after lamp-off mapping mode.
+
+## Files Changed This Session
+
+1. Captain-v2-matrix/src/matrix_app_main.cpp
+   - Added status RGB handling (RMT WS2812)
+   - Adjusted red-fault trigger behavior
+   - Narrowed reject-count logic for lamp writes
+2. Captain-v2/src/control_main.cpp
+   - Added MATRIX_SWITCH_MAPPING_MODE and forced lamps off in writeMatrixCommand while enabled
+
+## Morning Restart Plan
+
+1. Keep current firmware baseline (do not roll back).
+2. Start with quiet 30s capture on COM5 and record:
+   - sw0 unique values
+   - dropped totals
+   - sw_edges max
+3. Run focused single-switch capture (15 to 20 deliberate presses) using the known-good parse script format used today.
+4. Decide path:
+   - If one bit cleanly dominates, lock mapping and proceed to control features.
+   - If not, shift to matrix-side scan/debounce tuning for isolation before gameplay logic.
+
+## Recommended First Task Tomorrow
+
+Treat this as a switch-signal quality task, not a communication task.
+
+Goal for first hour:
+- Produce one reproducible capture proving either clean single-bit mapping or proving need for matrix-side scan tuning.
+
+## Quick Resume Prompt
+
+Continue from END_OF_DAY_HANDOFF_2026-05-10.rmd.
+
+Current state: matrix-control link is stable, RGB status is working, false red protocol alarms were corrected, and mapping mode is enabled in Captain-v2/src/control_main.cpp. Next step is switch isolation validation (single-switch bit-dominance capture) and then either lock mapping or begin matrix-side scan/debounce tuning.
