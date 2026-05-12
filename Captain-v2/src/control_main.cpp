@@ -23,14 +23,23 @@ namespace {
 constexpr uint32_t POLL_MS = 15;
 constexpr uint32_t DIRECT_INPUT_POLL_MS = 5;
 constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
-constexpr uint8_t HEARTBEAT_PIN = 2;
+constexpr uint8_t HEARTBEAT_PIN = 16;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
+constexpr uint32_t MATRIX_INIT_RETRY_MS = 1000;
 constexpr uint32_t MATRIX_SWITCH_LOG_DEBOUNCE_MS = 250;
 constexpr uint32_t MATRIX_SWITCH_LOG_REPORT_MS = 1000;
 constexpr uint16_t MATRIX_SWITCH_LOG_MAX_PER_REPORT = 12;
+// Diagnostic mode: force matrix lamps off to isolate switch mapping from lamp-scan coupling.
+// Keep disabled for normal bring-up; when enabled it intentionally drives lamp frames to all-zero.
+constexpr bool MATRIX_SWITCH_MAPPING_MODE = false;
+// Temporary S2 safety limiter: prevent outhole retrigger loops while eject force is weak.
+constexpr uint32_t S2_RETRIGGER_COOLDOWN_MS = 1500;
+constexpr uint32_t S2_WINDOW_MS = 10000;
+constexpr uint8_t S2_MAX_FIRES_PER_WINDOW = 3;
+constexpr uint8_t S2_MAX_FIRES_PER_BALL = 5;
 // Real gameplay: no more than 2-3 switches can close simultaneously (ball hits multiple targets).
 // Scan transients appear as 5-28 edges per poll. Threshold of 4 passes genuine multi-switch
 // events while blocking all observed scan-induced bursts.
@@ -75,6 +84,7 @@ uint32_t lastHeadboxAttractStepMs = 0;
 uint8_t headboxAttractStep = 0;
 bool matrixDeviceReady = false;
 uint32_t lastMatrixGoodTransactionMs = 0;
+uint32_t lastMatrixInitAttemptMs = 0;
 uint32_t lastMatrixDiagPollMs = 0;
 bool matrixLinkFaulted = false;
 uint32_t matrixWriteOkCount = 0;
@@ -85,14 +95,26 @@ uint32_t matrixDiagReadFailCount = 0;
 uint32_t matrixDiagWarnCount = 0;
 uint32_t lastMatrixLinkSummaryMs = 0;
 uint8_t lastMatrixSwitch0 = 0;
+uint8_t lastMatrixSwitch1 = 0;
+uint8_t lastMatrixSwitch2 = 0;
+uint8_t lastMatrixSwitch3 = 0;
 bool matrixSwitch0Seen = false;
 bool matrixDiagFaulted = false;
 uint32_t matrixSwitchLogSuppressedDebounce = 0;
 uint32_t matrixSwitchLogSuppressedRate = 0;
 uint32_t matrixSwitchSuppressedBurst = 0;
+uint32_t s2SuppressedCooldown = 0;
+uint32_t s2SuppressedWindow = 0;
+uint32_t s2SuppressedBall = 0;
+bool currentSW1Mode = false;  // false = Easy, true = Hard
+bool currentSW2Mode = false;  // false = Game, true = Test
 uint16_t matrixSwitchLoggedThisWindow = 0;
 uint16_t matrixSwitchEdgesThisWindow = 0;
 uint32_t matrixSwitchLogWindowStartMs = 0;
+uint32_t s2WindowStartMs = 0;
+uint32_t s2LastFireMs = 0;
+uint8_t s2FiresInWindow = 0;
+uint8_t s2FiresThisBall = 0;
 QueueHandle_t audioToneQueue = nullptr;
 TaskHandle_t controlTaskHandle = nullptr;
 TaskHandle_t audioTaskHandle = nullptr;
@@ -102,7 +124,8 @@ bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
     }
 
     AudioToneEvent event = {frequencyHz, durationMs};
-    if (xQueueSend(audioToneQueue, &event, 0) == pdPASS) {
+    if (xQueueSend(audioToneQueue, &event
+        , 0) == pdPASS) {
         return true;
     }
     return false;
@@ -169,24 +192,25 @@ bool matrixReadRegisters(uint8_t startRegister, uint8_t* out, size_t len) {
 }
 
 void initMatrixDevice() {
-    const bool pulseOk = matrixWriteCommandByte(static_cast<uint8_t>(CAPTAIN_MATRIX_CMD_PULSE_WIDTH_BASE | CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL));
-    const bool systemOk = matrixWriteCommandByte(static_cast<uint8_t>(CAPTAIN_MATRIX_CMD_SYSTEM_SETUP | CAPTAIN_MATRIX_CMD_SYSTEM_ENABLE));
-    const bool outputOk = matrixWriteCommandByte(static_cast<uint8_t>(CAPTAIN_MATRIX_CMD_OUTPUT_SETUP | CAPTAIN_MATRIX_CMD_OUTPUT_ENABLE));
-    matrixDeviceReady = pulseOk && systemOk && outputOk;
+    const uint32_t now = millis();
+    lastMatrixInitAttemptMs = now;
 
-    if (matrixDeviceReady) {
-        lastMatrixGoodTransactionMs = millis();
+    Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
+    const uint8_t probeError = Wire.endTransmission();
+
+    if (probeError == 0) {
+        matrixDeviceReady = true;
+        lastMatrixGoodTransactionMs = now;
         matrixLinkFaulted = false;
-        Serial.printf("Matrix device ready at 0x%02X (pulseLevel=%u)\n",
-                      CAPTAIN_MATRIX_I2C_ADDRESS,
-                      static_cast<unsigned>(CAPTAIN_MATRIX_DEFAULT_PULSE_WIDTH_LEVEL));
-    } else {
-        Serial.printf("Matrix device init failed at 0x%02X (pulse=%u system=%u output=%u)\n",
-                      CAPTAIN_MATRIX_I2C_ADDRESS,
-                      pulseOk ? 1u : 0u,
-                      systemOk ? 1u : 0u,
-                      outputOk ? 1u : 0u);
+        Serial.printf("Matrix device ready at 0x%02X (simplified bridge mode, no HT16K33 emulation)\n",
+                      CAPTAIN_MATRIX_I2C_ADDRESS);
+        return;
     }
+
+    matrixDeviceReady = false;
+    Serial.printf("Matrix device missing at 0x%02X (err=%u), retrying...\n",
+                  CAPTAIN_MATRIX_I2C_ADDRESS,
+                  static_cast<unsigned>(probeError));
 }
 
 void logMatrixLinkSummary(uint32_t now) {
@@ -195,7 +219,7 @@ void logMatrixLinkSummary(uint32_t now) {
     }
 
     lastMatrixLinkSummaryMs = now;
-    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu\n",
+    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu s2_fire=%u s2_cd=%lu s2_win=%lu s2_ball=%lu\n",
                   matrixDeviceReady ? 1u : 0u,
                   matrixLinkFaulted ? 1u : 0u,
                   static_cast<unsigned long>(matrixWriteOkCount),
@@ -204,10 +228,17 @@ void logMatrixLinkSummary(uint32_t now) {
                   static_cast<unsigned long>(matrixReadFailCount),
                   static_cast<unsigned long>(matrixDiagWarnCount),
                   static_cast<unsigned>(lastMatrixSwitch0),
+                  static_cast<unsigned>(lastMatrixSwitch1),
+                  static_cast<unsigned>(lastMatrixSwitch2),
+                  static_cast<unsigned>(lastMatrixSwitch3),
                   static_cast<unsigned>(matrixSwitchEdgesThisWindow),
                   static_cast<unsigned>(matrixSwitchLoggedThisWindow),
                   static_cast<unsigned long>(matrixSwitchLogSuppressedDebounce),
-                  static_cast<unsigned long>(matrixSwitchLogSuppressedRate));
+                  static_cast<unsigned long>(matrixSwitchLogSuppressedRate),
+                  static_cast<unsigned>(s2FiresThisBall),
+                  static_cast<unsigned long>(s2SuppressedCooldown),
+                  static_cast<unsigned long>(s2SuppressedWindow),
+                  static_cast<unsigned long>(s2SuppressedBall));
 
     if (matrixSwitchSuppressedBurst > 0) {
         Serial.printf("Matrix switch burst filter: dropped=%lu (max rising edges per poll=%u)\n",
@@ -220,6 +251,9 @@ void logMatrixLinkSummary(uint32_t now) {
     matrixSwitchLogSuppressedDebounce = 0;
     matrixSwitchLogSuppressedRate = 0;
     matrixSwitchSuppressedBurst = 0;
+    s2SuppressedCooldown = 0;
+    s2SuppressedWindow = 0;
+    s2SuppressedBall = 0;
     matrixSwitchLogWindowStartMs = now;
 }
 
@@ -520,9 +554,47 @@ void playStartupMelody() {
 
 void initSolenoids() {
     for (uint8_t index = 0; index < SOLENOID_COUNT; index++) {
-        pinMode(CAPTAIN_SOLENOID_PINS[index], OUTPUT);
+        // Write LOW to the output latch before enabling OUTPUT to avoid drive glitch
         digitalWrite(CAPTAIN_SOLENOID_PINS[index], LOW);
+        pinMode(CAPTAIN_SOLENOID_PINS[index], OUTPUT);
     }
+}
+
+void fireSolenoid(CaptainSolenoidId solenoidId);  // Forward declaration
+
+void resetS2LimiterForNewBall(uint32_t nowMs) {
+    s2FiresThisBall = 0;
+    s2FiresInWindow = 0;
+    s2WindowStartMs = nowMs;
+    s2LastFireMs = 0;
+}
+
+bool tryFireS2WithLimits(uint32_t nowMs) {
+    if (s2LastFireMs != 0 && (nowMs - s2LastFireMs) < S2_RETRIGGER_COOLDOWN_MS) {
+        s2SuppressedCooldown++;
+        return false;
+    }
+
+    if (s2WindowStartMs == 0 || (nowMs - s2WindowStartMs) >= S2_WINDOW_MS) {
+        s2WindowStartMs = nowMs;
+        s2FiresInWindow = 0;
+    }
+
+    if (s2FiresInWindow >= S2_MAX_FIRES_PER_WINDOW) {
+        s2SuppressedWindow++;
+        return false;
+    }
+
+    if (s2FiresThisBall >= S2_MAX_FIRES_PER_BALL) {
+        s2SuppressedBall++;
+        return false;
+    }
+
+    fireSolenoid(SOLENOID_S2);
+    s2LastFireMs = nowMs;
+    s2FiresInWindow++;
+    s2FiresThisBall++;
+    return true;
 }
 
 void fireSolenoid(CaptainSolenoidId solenoidId) {
@@ -562,26 +634,47 @@ bool readDirectInputActive(CaptainDirectInputId inputId) {
     return level == HIGH;
 }
 
+const char* directInputName(CaptainDirectInputId inputId) {
+    return CAPTAIN_DIRECT_INPUT_NAMES[static_cast<uint8_t>(inputId)];
+}
+
 void onDirectInputPressed(CaptainDirectInputId inputId) {
+    Serial.printf("Direct input pressed: %s\n", directInputName(inputId));
+
     if (inputId == DIRECT_INPUT_START) {
         displayScore = 0;
         tiltLatched = false;
+        currentSW2Mode = false;  // Reset SW2 (Game/Test) to Game on Start
+        resetS2LimiterForNewBall(millis());
+        Serial.println("[START] Score reset, tilt cleared, S2 limiter reset, SW2 reset to Game mode");
         queueTone(880, 80);
     } else if (inputId == DIRECT_INPUT_TILT) {
         tiltLatched = true;
+        Serial.println("[TILT] Tilt latch activated");
         queueTone(220, 120);
     } else if (inputId == DIRECT_INPUT_SW1) {
-        displayScore += 100;
-        fireSolenoid(SOLENOID_S5);
-        queueTone(660, 60);
+        // SW1 is a maintained slide switch: Easy (false) or Hard (true)
+        bool newMode = directInputStable[DIRECT_INPUT_SW1];
+        if (newMode != currentSW1Mode) {
+            currentSW1Mode = newMode;
+            const char* modeStr = currentSW1Mode ? "Hard" : "Easy";
+            Serial.printf("[SW1] Mode changed to: %s\n", modeStr);
+            queueTone(660, 60);
+        }
     } else if (inputId == DIRECT_INPUT_SW2) {
-        displayScore += 100;
-        fireSolenoid(SOLENOID_S6);
-        queueTone(740, 60);
+        // SW2 is a maintained slide switch: Game (false) or Test (true)
+        bool newMode = directInputStable[DIRECT_INPUT_SW2];
+        if (newMode != currentSW2Mode) {
+            currentSW2Mode = newMode;
+            const char* modeStr = currentSW2Mode ? "Test" : "Game";
+            Serial.printf("[SW2] Mode changed to: %s\n", modeStr);
+            queueTone(740, 60);
+        }
     }
 }
 
 void onDirectInputReleased(CaptainDirectInputId inputId) {
+    Serial.printf("Direct input released: %s\n", directInputName(inputId));
 }
 
 void initDirectInputs() {
@@ -714,7 +807,7 @@ void handleSwitchEdges(const uint8_t* switchBits) {
                 displayScore += points;
 
                 if (row == 0 && col == 0) {
-                    fireSolenoid(SOLENOID_S2);
+                    tryFireS2WithLimits(nowMs);
                 } else if (row == 2 && col == 1) {
                     fireSolenoid(SOLENOID_S3);
                 } else if (row == 3 && col == 1) {
@@ -810,7 +903,9 @@ void computeMatrixAttractFrame(uint32_t now, uint8_t* lampRows) {
 bool writeMatrixCommand(uint32_t now) {
     uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
 
-    if (CAPTAIN_MATRIX_ATTRACT_ENABLED) {
+    if (MATRIX_SWITCH_MAPPING_MODE) {
+        memset(lampRows, 0, sizeof(lampRows));
+    } else if (CAPTAIN_MATRIX_ATTRACT_ENABLED) {
         computeMatrixAttractFrame(now, lampRows);
     } else {
         // Static bring-up test pattern: L2, L7, L10, L20
@@ -903,6 +998,7 @@ void setup() {
     }
 
     initSolenoids();
+    resetS2LimiterForNewBall(millis());
     initDirectInputs();
     initHeartbeat();
     initI2SAudio();
@@ -982,8 +1078,22 @@ void setup() {
                         headboxPattern = updateHeadboxAttractLoop(now);
                         updateHeadboxLamps(headboxPattern);
                     } else {
-                        if (!matrixDeviceReady) {
+                        if (!matrixDeviceReady && (now - lastMatrixInitAttemptMs) >= MATRIX_INIT_RETRY_MS) {
                             initMatrixDevice();
+                        }
+
+                        if (!matrixDeviceReady) {
+                            const bool blink = ((now / 350) % 2) != 0;
+                            headboxPattern = composeHeadboxPattern(displayScore, blink);
+                            updateHeadboxLamps(headboxPattern);
+                            if (!matrixSwitch0Seen) {
+                                lastMatrixSwitch0 = 0;
+                                lastMatrixSwitch1 = 0;
+                                lastMatrixSwitch2 = 0;
+                                lastMatrixSwitch3 = 0;
+                            }
+                            logMatrixLinkSummary(now);
+                            continue;
                         }
 
                         const bool writeOk = writeMatrixCommand(now);
@@ -998,6 +1108,9 @@ void setup() {
                         if (readOk) {
                             matrixReadOkCount++;
                             lastMatrixSwitch0 = switchBits[0];
+                            lastMatrixSwitch1 = switchBits[1];
+                            lastMatrixSwitch2 = switchBits[2];
+                            lastMatrixSwitch3 = switchBits[3];
                             matrixSwitch0Seen = true;
                         } else {
                             matrixReadFailCount++;
@@ -1011,25 +1124,8 @@ void setup() {
 
                         if (now - lastMatrixDiagPollMs >= MATRIX_DIAG_POLL_MS) {
                             lastMatrixDiagPollMs = now;
-                            uint8_t diagBytes[CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1] = {};
-                            if (readMatrixDiagnostics(diagBytes)) {
-                                const uint8_t status = diagBytes[0];
-                                const bool systemEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_SYSTEM_ENABLED) != 0;
-                                const bool outputEnabled = (status & CAPTAIN_MATRIX_DIAG_FLAG_OUTPUT_ENABLED) != 0;
-                                if (!systemEnabled || !outputEnabled) {
-                                    matrixDiagWarnCount++;
-                                    if (!matrixDiagFaulted) {
-                                        matrixDiagFaulted = true;
-                                        Serial.printf("Matrix diag warning: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
-                                    }
-                                } else if (matrixDiagFaulted) {
-                                    matrixDiagFaulted = false;
-                                    Serial.printf("Matrix diag recovered: status=0x%02X pulse=%u\n", status, static_cast<unsigned>(diagBytes[1]));
-                                }
-                            } else {
-                                matrixDiagReadFailCount++;
-                                matrixDeviceReady = false;
-                            }
+                            // Diagnostic polling removed in simplified bridge mode
+                            // Bridge returns status 0x80 (enabled) always
                         }
 
                         const bool blink = ((now / 350) % 2) != 0;
@@ -1037,6 +1133,9 @@ void setup() {
                         updateHeadboxLamps(headboxPattern);
                         if (!matrixSwitch0Seen) {
                             lastMatrixSwitch0 = 0;
+                            lastMatrixSwitch1 = 0;
+                            lastMatrixSwitch2 = 0;
+                            lastMatrixSwitch3 = 0;
                         }
                         logMatrixLinkSummary(now);
                     }

@@ -1,0 +1,26 @@
+CONTEXT RECAP - 2026-05-12 Heartbeat LED Restoration
+
+## What Was Done
+- Fixed control board heartbeat pin conflict: GPIO2 → GPIO16 (was conflicting with 74HC595)
+- Implemented matrix board WS2812 heartbeat: GPIO8, RMT-based, 500ms toggle (green blink)
+- Validated I2C link: steady ~66 pkt/s, no errors, ready=1, fault=0
+
+## Immediate Next Steps
+1. Verify LED blinking visually on both boards (especially matrix board COM4)
+2. Confirm I2C link continues stable over 5–10 min extended test
+3. Remove unused scanSwitchMatrix() compiler warning
+4. Resume switch mapping validation if LED tests pass quickly
+
+## Key Files Changed
+- Captain-v2/src/control_main.cpp (line 26: HEARTBEAT_PIN = 16)
+- Captain-v2-matrix/src/matrix_app_main.cpp (heartbeat + RMT implementation)
+
+## Full Details
+See END_OF_DAY_HANDOFF_2026-05-12.md for complete journey summary, known issues, and potential steps.
+
+## Build Commands (if needed)
+Matrix: platformio run -e captain_matrix_idf -t upload --upload-port COM4
+Control: platformio run -e captain_control -t upload --upload-port COM5
+
+## No Blockers
+Both boards compiling, uploading, and running cleanly.

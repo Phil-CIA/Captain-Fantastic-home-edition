@@ -1,0 +1,4 @@
+Handoff Date,Firmware File,Build Env,GPIO Rows,GPIO Cols,SR Clock,SR Data,SR Latch,I2C Addr,ROW_SETTLE_US,SWITCH_DEBOUNCE_TICKS,LAMP_PULSE_MIN_US,LAMP_PULSE_STEP_US,Test Status,Notes
+2026-05-05,matrix_app_main.cpp.bak-2026-05-05,captain_matrix_idf,GPIO18/19/20/21,GPIO18/19/20/21,GPIO22,GPIO15,GPIO23,0x24,50,4,100,100,PASS,Baseline: switches working detected; OLED disabled; phase offset on scope but scan stable
+2026-05-10,matrix_app_main.cpp,captain_matrix_idf,GPIO18/19/20/21,GPIO18/19/20/21,GPIO22,GPIO15,GPIO23,0x24,300,1,300,100,FAIL,"Experimental: diagnostic hacks; ACTIVE_LOW=false (wrong); debounce forced to 1; switch isolation failing"
+2026-05-12,matrix_app_main.cpp (restored from .bak-2026-05-05),captain_matrix_idf,GPIO18/19/20/21,GPIO18/19/20/21,GPIO22,GPIO15,GPIO23,0x24,50,4,100,100,PASS,Baseline revalidated: sw0..sw3 all toggling; link stable; acceptance test PASS

@@ -10,3 +10,6 @@ Current archive groups:
 Notes:
 - These files are retained for reference and recovery.
 - Active firmware development should stay in root src/, include/, data/, and docs/.
+- Treat all archive content as sequestered historical material.
+- Do not open KiCad projects for active edits from this folder.
+- Active KiCad projects are listed in hardware/kicad/SOURCE_OF_TRUTH.md.

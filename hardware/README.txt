@@ -1,5 +1,8 @@
 This folder contains hardware design files, schematics, PCB layouts, and fabrication exports for Captain Fantastic v2.
 
+Canonical project map and opening policy:
+- kicad/SOURCE_OF_TRUTH.md
+
 ## Current Active Designs (v2 split-MPU architecture)
 
 Structure:
@@ -13,6 +16,10 @@ Structure:
 ## Historical / Legacy
 - kicad/legacy/: Hat board (superseded single-board v1 design — trace size and SR enable fixed in v2 split)
 - kicad/esp32vroom/: Original ESP32Vroom KiCad project files (historical reference)
+
+Important:
+- Open active projects only from kicad/captain_control and kicad/captain_matrix.
+- Treat kicad/legacy, kicad/esp32vroom, and archive/ as read-only historical sources.
 
 ## Fabrication archives
 - gerbers/root-export-esp32vroom/: root-level export set moved from repo root

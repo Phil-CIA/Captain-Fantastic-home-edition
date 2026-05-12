@@ -52,3 +52,17 @@ This repo contains **multiple PlatformIO projects**:
 ## Documentation
 
 All setup guides and reference docs are in `docs/`. See `docs/REPO_INDEX.md` for a full index.
+
+## KiCad Current Project Entry Points
+
+If KiCad is opening the wrong local copy, use only these repo project files:
+
+- `hardware/kicad/captain_matrix/Pinball matrix board.kicad_pro`
+- `hardware/kicad/captain_control/Pinball Control board.kicad_pro`
+- `hardware/kicad/legacy/Hat board.kicad_pro` (historical reference project)
+
+To keep KiCad focused on repo paths:
+
+1. Launch with `Open-KiCad.ps1` from repo root.
+2. Run `Reset-KiCad-Recents-ToRepo.ps1` once to clear stale KiCad recent/open project paths.
+3. Use `hardware/kicad/SOURCE_OF_TRUTH.md` as the canonical board-path map.

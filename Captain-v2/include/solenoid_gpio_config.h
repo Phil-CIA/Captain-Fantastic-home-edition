@@ -29,7 +29,7 @@ constexpr const char* CAPTAIN_SOLENOID_NAMES[SOLENOID_COUNT] = {
 };
 
 constexpr uint16_t CAPTAIN_SOLENOID_PULSE_MS[SOLENOID_COUNT] = {
-    45,
+    80,   // S2 Outhole - longer pulse for full ball eject force
     45,
     45,
     40,

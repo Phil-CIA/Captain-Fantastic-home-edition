@@ -1,0 +1,39 @@
+schema_version: 1
+last_updated: 2026-05-10
+
+current_projects:
+  matrix:
+    role: active
+    fab_anchor_date: 2026-04-09
+    project_file: hardware/kicad/captain_matrix/Pinball matrix board.kicad_pro
+    folder: hardware/kicad/captain_matrix
+  control:
+    role: active
+    fab_anchor_date: 2026-04-11
+    project_file: hardware/kicad/captain_control/Pinball Control board.kicad_pro
+    folder: hardware/kicad/captain_control
+  hat:
+    role: historical_reference
+    fab_anchor_date: 2026-03-16
+    project_file: hardware/kicad/legacy/Hat board.kicad_pro
+    folder: hardware/kicad/legacy
+
+historical_locations:
+  - name: esp32vroom_original
+    role: sequestered
+    folder: hardware/kicad/esp32vroom
+  - name: archive_root
+    role: sequestered
+    folder: archive
+  - name: legacy_gerbers
+    role: fabrication_outputs_only
+    folder: hardware/gerbers
+
+agent_notes:
+  open_policy:
+    - Open active design work only from current_projects entries with role active.
+    - Do not start active edits from historical_locations entries.
+  launch_hint:
+    - Use Open-KiCad.ps1 to launch repo-rooted KiCad sessions.
+  recovery_hint:
+    - Run Reset-KiCad-Recents-ToRepo.ps1 if KiCad starts opening stale local paths.

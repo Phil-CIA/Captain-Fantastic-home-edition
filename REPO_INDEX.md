@@ -24,9 +24,13 @@
    - hardware/kicad/legacy/ — Hat board (old single-board design, superseded)
    - hardware/kicad/esp32vroom/ — Original ESP32Vroom project (historical)
    - hardware/kicad/libs/ — Shared KiCad symbols and footprints
+   - hardware/kicad/SOURCE_OF_TRUTH.md — Canonical current KiCad project map and archive policy
+   - hardware/kicad/CURRENT_PROJECTS.yaml — Machine-readable current/historical KiCad path map for agents
    - hardware/gerbers/root-export-esp32vroom/ — Legacy gerber exports
    - hardware/gerbers/legacy-gerber-files/ — Older gerber exports
    - hardware/backups/esp32vroom-backups/ — Historical hardware backups
+   - Open-KiCad.ps1 — Repo-safe KiCad launcher (manager/control/matrix/hat/7seg)
+   - Reset-KiCad-Recents-ToRepo.ps1 — One-time KiCad recent/open-project reset to repo root
 4. Archive material
    - archive/backups/
    - archive/battery-charger/
