@@ -6,6 +6,7 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <ArduinoOTA.h>
+#include <Adafruit_NeoPixel.h>
 #include <driver/i2s.h>
 #include "captain_protocol.h"
 #include "captain_mapping.h"
@@ -23,8 +24,9 @@ namespace {
 constexpr uint32_t POLL_MS = 15;
 constexpr uint32_t DIRECT_INPUT_POLL_MS = 5;
 constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
-constexpr uint8_t HEARTBEAT_PIN = 16;
+constexpr uint8_t HEARTBEAT_PIN = 15;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
+constexpr bool HEARTBEAT_IS_WS2812 = true;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
@@ -76,6 +78,7 @@ uint8_t audioLrckPinEffective = CAPTAIN_AUDIO_LRCK_PIN;
 bool heartbeatEnabled = false;
 bool heartbeatState = false;
 uint32_t lastHeartbeatToggleMs = 0;
+Adafruit_NeoPixel heartbeatPixel(1, HEARTBEAT_PIN, NEO_GRB + NEO_KHZ800);
 bool otaReady = false;
 bool otaInProgress = false;
 uint32_t lastOtaVisualToggleMs = 0;
@@ -323,12 +326,19 @@ void initHeartbeat() {
         return;
     }
 
-    pinMode(HEARTBEAT_PIN, OUTPUT);
-    digitalWrite(HEARTBEAT_PIN, LOW);
+    if (HEARTBEAT_IS_WS2812) {
+        heartbeatPixel.begin();
+        heartbeatPixel.setPixelColor(0, heartbeatPixel.Color(0, 0, 0));
+        heartbeatPixel.show();
+    } else {
+        pinMode(HEARTBEAT_PIN, OUTPUT);
+        digitalWrite(HEARTBEAT_PIN, LOW);
+    }
+
     heartbeatEnabled = true;
     heartbeatState = false;
     lastHeartbeatToggleMs = millis();
-    Serial.printf("Heartbeat enabled on GPIO%u\n", HEARTBEAT_PIN);
+    Serial.printf("Heartbeat enabled on GPIO%u (%s)\n", HEARTBEAT_PIN, HEARTBEAT_IS_WS2812 ? "WS2812" : "GPIO");
 }
 
 void updateHeartbeat(uint32_t now) {
@@ -339,7 +349,12 @@ void updateHeartbeat(uint32_t now) {
     if (now - lastHeartbeatToggleMs >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeatToggleMs = now;
         heartbeatState = !heartbeatState;
-        digitalWrite(HEARTBEAT_PIN, heartbeatState ? HIGH : LOW);
+        if (HEARTBEAT_IS_WS2812) {
+            heartbeatPixel.setPixelColor(0, heartbeatState ? heartbeatPixel.Color(0, 24, 0) : heartbeatPixel.Color(0, 0, 0));
+            heartbeatPixel.show();
+        } else {
+            digitalWrite(HEARTBEAT_PIN, heartbeatState ? HIGH : LOW);
+        }
     }
 }
 
