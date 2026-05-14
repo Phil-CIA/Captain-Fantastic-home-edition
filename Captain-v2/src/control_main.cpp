@@ -35,8 +35,13 @@ constexpr uint32_t MATRIX_SWITCH_LOG_DEBOUNCE_MS = 250;
 constexpr uint32_t MATRIX_SWITCH_LOG_REPORT_MS = 1000;
 constexpr uint16_t MATRIX_SWITCH_LOG_MAX_PER_REPORT = 12;
 // Diagnostic mode: force matrix lamps off to isolate switch mapping from lamp-scan coupling.
-// Keep disabled for normal bring-up; when enabled it intentionally drives lamp frames to all-zero.
+// Disabled for normal solenoid bring-up/gameplay.
 constexpr bool MATRIX_SWITCH_MAPPING_MODE = false;
+constexpr bool START_BUTTON_SOLENOID_TEST_ENABLED = false;
+constexpr bool MATRIX_SWITCH_SOLENOIDS_ENABLED = true;
+constexpr uint8_t S20_OUTHOLE_SWITCH_ROW = 0;
+constexpr uint8_t S20_OUTHOLE_SWITCH_COL = 0;
+constexpr uint32_t S20_OUTHOLE_RETRIGGER_COOLDOWN_MS = 50;
 // Temporary S2 safety limiter: prevent outhole retrigger loops while eject force is weak.
 constexpr uint32_t S2_RETRIGGER_COOLDOWN_MS = 1500;
 constexpr uint32_t S2_WINDOW_MS = 10000;
@@ -59,9 +64,41 @@ struct AudioToneEvent {
     uint16_t durationMs;
 };
 
+enum CaptainGameMode : uint8_t {
+    GAME_MODE_ATTRACT = 0,
+    GAME_MODE_SERVE_BALL,
+    GAME_MODE_BALL_IN_PLAY,
+    GAME_MODE_BONUS_COUNTDOWN,
+    GAME_MODE_GAME_OVER
+};
+
+struct CaptainGameplayState {
+    CaptainGameMode mode = GAME_MODE_ATTRACT;
+    uint32_t score = 0;
+    uint16_t bonus = 1000;
+    uint8_t bonusMultiplier = 1;
+    uint8_t currentBall = 0;
+    bool ballInPlay = false;
+    bool laneAComplete = false;
+    bool laneBComplete = false;
+    bool laneCComplete = false;
+    bool laneDComplete = false;
+    bool target1Complete = false;
+    bool target2Complete = false;
+    bool target3Complete = false;
+    bool samePlayerLit = false;
+    uint32_t lastBonusStepMs = 0;
+};
+
+constexpr uint32_t BONUS_COUNTDOWN_STEP_MS = 200;
+constexpr uint16_t GAMEPLAY_BONUS_START = 1000;
+constexpr uint16_t GAMEPLAY_BONUS_MAX = 10000;
+
 uint32_t displayScore = 0;
+uint32_t lastDisplayedScore = UINT32_MAX;
 uint32_t lastDisplayUpdate = 0;
 uint8_t previousSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
+uint8_t lastMatrixLampRows[CAPTAIN_LAMP_ROWS] = {};
 uint16_t headboxPattern = 0;
 bool solenoidActive[SOLENOID_COUNT] = {false};
 uint32_t solenoidStartedAtMs[SOLENOID_COUNT] = {0};
@@ -106,6 +143,10 @@ bool matrixDiagFaulted = false;
 uint32_t matrixSwitchLogSuppressedDebounce = 0;
 uint32_t matrixSwitchLogSuppressedRate = 0;
 uint32_t matrixSwitchSuppressedBurst = 0;
+uint32_t matrixSwitchSuppressedLampEcho = 0;
+uint32_t lastMatrixSwitchEdgeLogMs = 0;
+uint32_t s20OutholeLastRiseMs = 0;
+uint32_t s20OutholeSuppressedSticky = 0;
 uint32_t s2SuppressedCooldown = 0;
 uint32_t s2SuppressedWindow = 0;
 uint32_t s2SuppressedBall = 0;
@@ -118,9 +159,16 @@ uint32_t s2WindowStartMs = 0;
 uint32_t s2LastFireMs = 0;
 uint8_t s2FiresInWindow = 0;
 uint8_t s2FiresThisBall = 0;
+CaptainGameplayState gameplayState = {};
 QueueHandle_t audioToneQueue = nullptr;
 TaskHandle_t controlTaskHandle = nullptr;
 TaskHandle_t audioTaskHandle = nullptr;
+
+void resetGameplayStateForNewBall();
+void startNewGame();
+void startBonusCountdown(uint32_t nowMs);
+void updateGameplayState(uint32_t nowMs);
+void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs);
 bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
     if (!i2sAudioReady || CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE || audioToneQueue == nullptr) {
         return false;
@@ -222,7 +270,7 @@ void logMatrixLinkSummary(uint32_t now) {
     }
 
     lastMatrixLinkSummaryMs = now;
-    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu s2_fire=%u s2_cd=%lu s2_win=%lu s2_ball=%lu\n",
+    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu sup_le=%lu s20_sticky=%lu s2_fire=%u s2_cd=%lu s2_win=%lu s2_ball=%lu\n",
                   matrixDeviceReady ? 1u : 0u,
                   matrixLinkFaulted ? 1u : 0u,
                   static_cast<unsigned long>(matrixWriteOkCount),
@@ -238,6 +286,8 @@ void logMatrixLinkSummary(uint32_t now) {
                   static_cast<unsigned>(matrixSwitchLoggedThisWindow),
                   static_cast<unsigned long>(matrixSwitchLogSuppressedDebounce),
                   static_cast<unsigned long>(matrixSwitchLogSuppressedRate),
+                  static_cast<unsigned long>(matrixSwitchSuppressedLampEcho),
+                  static_cast<unsigned long>(s20OutholeSuppressedSticky),
                   static_cast<unsigned>(s2FiresThisBall),
                   static_cast<unsigned long>(s2SuppressedCooldown),
                   static_cast<unsigned long>(s2SuppressedWindow),
@@ -254,6 +304,8 @@ void logMatrixLinkSummary(uint32_t now) {
     matrixSwitchLogSuppressedDebounce = 0;
     matrixSwitchLogSuppressedRate = 0;
     matrixSwitchSuppressedBurst = 0;
+    matrixSwitchSuppressedLampEcho = 0;
+    s20OutholeSuppressedSticky = 0;
     s2SuppressedCooldown = 0;
     s2SuppressedWindow = 0;
     s2SuppressedBall = 0;
@@ -569,9 +621,10 @@ void playStartupMelody() {
 
 void initSolenoids() {
     for (uint8_t index = 0; index < SOLENOID_COUNT; index++) {
+        const uint8_t pin = CAPTAIN_SOLENOID_PINS[index];
         // Write LOW to the output latch before enabling OUTPUT to avoid drive glitch
-        digitalWrite(CAPTAIN_SOLENOID_PINS[index], LOW);
-        pinMode(CAPTAIN_SOLENOID_PINS[index], OUTPUT);
+        digitalWrite(pin, LOW);
+        pinMode(pin, OUTPUT);
     }
 }
 
@@ -633,8 +686,10 @@ void updateSolenoidPulses(uint32_t now) {
             continue;
         }
 
+        const uint8_t pin = CAPTAIN_SOLENOID_PINS[index];
+
         if (now - solenoidStartedAtMs[index] >= CAPTAIN_SOLENOID_PULSE_MS[index]) {
-            digitalWrite(CAPTAIN_SOLENOID_PINS[index], LOW);
+            digitalWrite(pin, LOW);
             solenoidActive[index] = false;
         }
     }
@@ -657,11 +712,20 @@ void onDirectInputPressed(CaptainDirectInputId inputId) {
     Serial.printf("Direct input pressed: %s\n", directInputName(inputId));
 
     if (inputId == DIRECT_INPUT_START) {
-        displayScore = 0;
+        if (START_BUTTON_SOLENOID_TEST_ENABLED && (currentSW2Mode || !matrixDeviceReady)) {
+            if (currentSW2Mode) {
+                Serial.println("[TEST] START pressed in Test mode -> firing S2");
+            } else {
+                Serial.println("[TEST] START pressed while matrix offline -> firing S2");
+            }
+            fireSolenoid(SOLENOID_S2);
+            queueTone(988, 80);
+            return;
+        }
+        startNewGame();
         tiltLatched = false;
         currentSW2Mode = false;  // Reset SW2 (Game/Test) to Game on Start
-        resetS2LimiterForNewBall(millis());
-        Serial.println("[START] Score reset, tilt cleared, S2 limiter reset, SW2 reset to Game mode");
+        Serial.println("[START] New game started, tilt cleared, SW2 reset to Game mode");
         queueTone(880, 80);
     } else if (inputId == DIRECT_INPUT_TILT) {
         tiltLatched = true;
@@ -746,41 +810,302 @@ void setHeadboxLamp(uint16_t& pattern, CaptainHeadboxLampId lampId, bool on) {
 }
 
 uint16_t composeHeadboxPattern(uint32_t score, bool blink) {
+    static_cast<void>(score);
     uint16_t pattern = 0;
 
-    const uint8_t ballIndex = static_cast<uint8_t>((score / 1000) % 5);
-    setHeadboxLamp(pattern, static_cast<CaptainHeadboxLampId>(HEADBOX_BALL_1 + ballIndex), true);
+    if (gameplayState.mode == GAME_MODE_ATTRACT || gameplayState.mode == GAME_MODE_GAME_OVER) {
+        setHeadboxLamp(pattern, HEADBOX_GAME_OVER, gameplayState.mode == GAME_MODE_GAME_OVER || blink);
+    } else {
+        setHeadboxLamp(pattern, HEADBOX_PLAYER_1, true);
+        if (gameplayState.currentBall >= 1 && gameplayState.currentBall <= 5) {
+            const CaptainHeadboxLampId ballLamp = static_cast<CaptainHeadboxLampId>(HEADBOX_BALL_1 - (gameplayState.currentBall - 1));
+            setHeadboxLamp(pattern, ballLamp, true);
+        }
+    }
 
-    const uint8_t playerIndex = static_cast<uint8_t>((score / 5000) % 4);
-    setHeadboxLamp(pattern, static_cast<CaptainHeadboxLampId>(HEADBOX_PLAYER_1 + playerIndex), true);
-
-    setHeadboxLamp(pattern, HEADBOX_TILT, tiltLatched || blink);
-    setHeadboxLamp(pattern, HEADBOX_GAME_OVER, score == 0);
+    setHeadboxLamp(pattern, HEADBOX_TILT, tiltLatched);
 
     return pattern;
 }
 
-uint32_t scoreForSwitch(uint8_t row, uint8_t col) {
-    if (row == 0 && col == 2) return 100;
-    if (row == 0 && col == 3) return 500;
-    if (row == 1 && col == 0) return 1000;
-    if (row == 1 && col == 2) return 50;
-    if (row == 1 && col == 3) return 100;
-    if (row == 2 && col == 0) return 1000;
-    if (row == 2 && col == 1) return 100;
-    if (row == 2 && col == 2) return 50;
-    if (row == 2 && col == 3) return 500;
-    if (row == 3 && col == 0) return 1000;
-    if (row == 3 && col == 1) return 100;
-    if (row == 3 && col == 2) return 100;
-    if (row == 3 && col == 3) return 500;
-    if (row == 4 && col == 0) return 1000;
-    if (row == 4 && col == 2) return 50;
-    if (row == 4 && col == 3) return 100;
-    if (row == 5 && col == 0) return 50;
-    if (row == 5 && col == 2) return 50;
-    if (row == 5 && col == 3) return 500;
-    return 0;
+void addGameplayScore(uint32_t points) {
+    gameplayState.score += points;
+    displayScore = gameplayState.score;
+}
+
+void logGameplayAward(const char* label, uint32_t points, uint16_t bonusAdded) {
+    Serial.printf("[GAME] %-16s score=+%lu bonus=+%u total=%lu bonus_total=%u x%u ball=%u\n",
+                  label,
+                  static_cast<unsigned long>(points),
+                  static_cast<unsigned>(bonusAdded),
+                  static_cast<unsigned long>(gameplayState.score),
+                  static_cast<unsigned>(gameplayState.bonus),
+                  static_cast<unsigned>(gameplayState.bonusMultiplier),
+                  static_cast<unsigned>(gameplayState.currentBall));
+}
+
+void addGameplayBonus(uint16_t points) {
+    uint32_t newBonus = static_cast<uint32_t>(gameplayState.bonus) + points;
+    gameplayState.bonus = static_cast<uint16_t>(newBonus > GAMEPLAY_BONUS_MAX ? GAMEPLAY_BONUS_MAX : newBonus);
+}
+
+void updateGameplayBonusMultiplier() {
+    const uint8_t previousMultiplier = gameplayState.bonusMultiplier;
+    if (gameplayState.target1Complete && gameplayState.target2Complete && gameplayState.target3Complete) {
+        gameplayState.bonusMultiplier = 3;
+    } else if (gameplayState.target1Complete && gameplayState.target2Complete) {
+        gameplayState.bonusMultiplier = 2;
+    } else {
+        gameplayState.bonusMultiplier = 1;
+    }
+
+    if (gameplayState.bonusMultiplier != previousMultiplier) {
+        Serial.printf("[GAME] Bonus multiplier -> %ux\n", static_cast<unsigned>(gameplayState.bonusMultiplier));
+    }
+}
+
+void updateGameplayLaneCompletion() {
+    const bool wasLit = gameplayState.samePlayerLit;
+    gameplayState.samePlayerLit = gameplayState.laneAComplete &&
+                                  gameplayState.laneBComplete &&
+                                  gameplayState.laneCComplete &&
+                                  gameplayState.laneDComplete;
+
+    if (!wasLit && gameplayState.samePlayerLit) {
+        Serial.println("[GAME] Lane set complete -> Same Player / return-lane feature lit");
+    }
+}
+
+void resetGameplayStateForNewBall() {
+    gameplayState.bonus = GAMEPLAY_BONUS_START;
+    gameplayState.bonusMultiplier = 1;
+    gameplayState.ballInPlay = false;
+    gameplayState.laneAComplete = false;
+    gameplayState.laneBComplete = false;
+    gameplayState.laneCComplete = false;
+    gameplayState.laneDComplete = false;
+    gameplayState.target1Complete = false;
+    gameplayState.target2Complete = false;
+    gameplayState.target3Complete = false;
+    gameplayState.samePlayerLit = false;
+    gameplayState.lastBonusStepMs = 0;
+}
+
+void startNewGame() {
+    gameplayState.mode = GAME_MODE_SERVE_BALL;
+    gameplayState.score = 0;
+    gameplayState.currentBall = 1;
+    resetGameplayStateForNewBall();
+    displayScore = 0;
+    Serial.println("[GAME] New single-player 5-ball game");
+}
+
+void startBonusCountdown(uint32_t nowMs) {
+    gameplayState.ballInPlay = false;
+    gameplayState.mode = GAME_MODE_BONUS_COUNTDOWN;
+    gameplayState.lastBonusStepMs = nowMs;
+    Serial.printf("[GAME] Bonus countdown start: bonus=%u x%u\n",
+                  static_cast<unsigned>(gameplayState.bonus),
+                  static_cast<unsigned>(gameplayState.bonusMultiplier));
+}
+
+void finishCurrentBall() {
+    if (gameplayState.currentBall >= 5) {
+        gameplayState.mode = GAME_MODE_GAME_OVER;
+        gameplayState.ballInPlay = false;
+        Serial.printf("[GAME] Game over: final score=%lu\n", static_cast<unsigned long>(gameplayState.score));
+        return;
+    }
+
+    Serial.printf("[GAME] Ball %u complete -> advancing to ball %u\n",
+                  static_cast<unsigned>(gameplayState.currentBall),
+                  static_cast<unsigned>(gameplayState.currentBall + 1));
+    gameplayState.currentBall++;
+    resetGameplayStateForNewBall();
+    gameplayState.mode = GAME_MODE_SERVE_BALL;
+}
+
+void updateGameplayState(uint32_t nowMs) {
+    if (currentSW2Mode) {
+        return;
+    }
+
+    switch (gameplayState.mode) {
+        case GAME_MODE_SERVE_BALL:
+            Serial.printf("[GAME] Serving ball %u\n", static_cast<unsigned>(gameplayState.currentBall));
+            resetS2LimiterForNewBall(nowMs);
+            tryFireS2WithLimits(nowMs);
+            gameplayState.ballInPlay = true;
+            gameplayState.mode = GAME_MODE_BALL_IN_PLAY;
+            break;
+        case GAME_MODE_BONUS_COUNTDOWN:
+            if (gameplayState.bonus == 0) {
+                finishCurrentBall();
+                break;
+            }
+            if ((nowMs - gameplayState.lastBonusStepMs) < BONUS_COUNTDOWN_STEP_MS) {
+                break;
+            }
+            gameplayState.lastBonusStepMs = nowMs;
+            if (gameplayState.bonus >= 1000) {
+                addGameplayScore(1000u * gameplayState.bonusMultiplier);
+                gameplayState.bonus = static_cast<uint16_t>(gameplayState.bonus - 1000);
+                Serial.printf("[GAME] Bonus step: +%lu remaining=%u x%u total=%lu\n",
+                              static_cast<unsigned long>(1000u * gameplayState.bonusMultiplier),
+                              static_cast<unsigned>(gameplayState.bonus),
+                              static_cast<unsigned>(gameplayState.bonusMultiplier),
+                              static_cast<unsigned long>(gameplayState.score));
+            } else {
+                addGameplayScore(static_cast<uint32_t>(gameplayState.bonus) * gameplayState.bonusMultiplier);
+                Serial.printf("[GAME] Bonus final step: +%lu\n",
+                              static_cast<unsigned long>(static_cast<uint32_t>(gameplayState.bonus) * gameplayState.bonusMultiplier));
+                gameplayState.bonus = 0;
+            }
+            if (gameplayState.bonus == 0) {
+                finishCurrentBall();
+            }
+            break;
+        case GAME_MODE_GAME_OVER:
+            gameplayState.ballInPlay = false;
+            break;
+        case GAME_MODE_ATTRACT:
+        case GAME_MODE_BALL_IN_PLAY:
+        default:
+            break;
+    }
+}
+
+void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
+    if (row == S20_OUTHOLE_SWITCH_ROW && col == S20_OUTHOLE_SWITCH_COL) {
+        if (gameplayState.mode == GAME_MODE_BALL_IN_PLAY && gameplayState.ballInPlay) {
+            Serial.println("[GAME] Ball drained -> bonus countdown");
+            startBonusCountdown(nowMs);
+        }
+        return;
+    }
+
+    if (gameplayState.mode != GAME_MODE_BALL_IN_PLAY || !gameplayState.ballInPlay) {
+        return;
+    }
+
+    switch (row) {
+        case 0:
+            if (col == 2) {
+                addGameplayScore(100);
+                logGameplayAward("Spinner R", 100, 0);
+            } else if (col == 3) {
+                addGameplayScore(500);
+                addGameplayBonus(500);
+                logGameplayAward("Return Lane R", 500, 500);
+            }
+            break;
+        case 1:
+            if (col == 0) {
+                addGameplayScore(1000);
+                addGameplayBonus(1000);
+                gameplayState.laneAComplete = true;
+                updateGameplayLaneCompletion();
+                logGameplayAward("Lane A", 1000, 1000);
+            } else if (col == 2) {
+                addGameplayScore(50);
+                addGameplayBonus(2000);
+                gameplayState.target1Complete = true;
+                updateGameplayBonusMultiplier();
+                logGameplayAward("Target 1", 50, 2000);
+            } else if (col == 3) {
+                addGameplayScore(100);
+                if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
+                    fireSolenoid(SOLENOID_S5);
+                }
+                logGameplayAward("Slingshot L", 100, 0);
+            }
+            break;
+        case 2:
+            if (col == 0) {
+                addGameplayScore(1000);
+                addGameplayBonus(1000);
+                gameplayState.laneBComplete = true;
+                updateGameplayLaneCompletion();
+                logGameplayAward("Lane B", 1000, 1000);
+            } else if (col == 1) {
+                addGameplayScore(100);
+                if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
+                    fireSolenoid(SOLENOID_S3);
+                }
+                logGameplayAward("Bumper L", 100, 0);
+            } else if (col == 2) {
+                addGameplayScore(50);
+                addGameplayBonus(50);
+                logGameplayAward("Side Switch 1", 50, 50);
+            } else if (col == 3) {
+                addGameplayScore(500);
+                addGameplayBonus(500);
+                logGameplayAward("Return Lane L", 500, 500);
+            }
+            break;
+        case 3:
+            if (col == 0) {
+                addGameplayScore(1000);
+                addGameplayBonus(1000);
+                gameplayState.laneCComplete = true;
+                updateGameplayLaneCompletion();
+                logGameplayAward("Lane C", 1000, 1000);
+            } else if (col == 1) {
+                addGameplayScore(100);
+                if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
+                    fireSolenoid(SOLENOID_S4);
+                }
+                logGameplayAward("Bumper R", 100, 0);
+            } else if (col == 2) {
+                addGameplayScore(100);
+                logGameplayAward("Spinner L", 100, 0);
+            } else if (col == 3) {
+                addGameplayScore(500);
+                addGameplayBonus(500);
+                logGameplayAward("Bonus Lane L", 500, 500);
+            }
+            break;
+        case 4:
+            if (col == 0) {
+                addGameplayScore(1000);
+                addGameplayBonus(1000);
+                gameplayState.laneDComplete = true;
+                updateGameplayLaneCompletion();
+                logGameplayAward("Lane D", 1000, 1000);
+            } else if (col == 2) {
+                addGameplayScore(50);
+                addGameplayBonus(2000);
+                gameplayState.target2Complete = true;
+                updateGameplayBonusMultiplier();
+                logGameplayAward("Target 2", 50, 2000);
+            } else if (col == 3) {
+                addGameplayScore(100);
+                if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
+                    fireSolenoid(SOLENOID_S6);
+                }
+                logGameplayAward("Slingshot R", 100, 0);
+            }
+            break;
+        case 5:
+            if (col == 0) {
+                addGameplayScore(50);
+                addGameplayBonus(2000);
+                gameplayState.target3Complete = true;
+                updateGameplayBonusMultiplier();
+                logGameplayAward("Target 3", 50, 2000);
+            } else if (col == 2) {
+                addGameplayScore(50);
+                addGameplayBonus(50);
+                logGameplayAward("Side Switch 2", 50, 50);
+            } else if (col == 3) {
+                addGameplayScore(500);
+                addGameplayBonus(500);
+                logGameplayAward("Bonus Lane R", 500, 500);
+            }
+            break;
+        default:
+            break;
+    }
 }
 
 void handleSwitchEdges(const uint8_t* switchBits) {
@@ -805,9 +1130,10 @@ void handleSwitchEdges(const uint8_t* switchBits) {
         }
     }
 
-    // Ignore impossible bursts; they are scan/bus transients that would otherwise score and fire coils.
-    if (risingEdgesThisPoll > MATRIX_MAX_RISING_EDGES_PER_POLL) {
+    // Ignore impossible bursts in normal mode; mapping mode must still log raw edges.
+    if (!MATRIX_SWITCH_MAPPING_MODE && risingEdgesThisPoll > MATRIX_MAX_RISING_EDGES_PER_POLL) {
         matrixSwitchSuppressedBurst++;
+        memcpy(previousSwitchBits, switchBits, sizeof(previousSwitchBits));
         return;
     }
 
@@ -817,21 +1143,45 @@ void handleSwitchEdges(const uint8_t* switchBits) {
             const bool previous = captainGetBit(previousSwitchBits, bit);
             const bool current = captainGetBit(switchBits, bit);
             if (!previous && current) {
-                matrixSwitchEdgesThisWindow++;
-                const uint32_t points = scoreForSwitch(row, col);
-                displayScore += points;
-
-                if (row == 0 && col == 0) {
-                    tryFireS2WithLimits(nowMs);
-                } else if (row == 2 && col == 1) {
-                    fireSolenoid(SOLENOID_S3);
-                } else if (row == 3 && col == 1) {
-                    fireSolenoid(SOLENOID_S4);
-                } else if (row == 1 && col == 3) {
-                    fireSolenoid(SOLENOID_S5);
-                } else if (row == 4 && col == 3) {
-                    fireSolenoid(SOLENOID_S6);
+                // Rows 6-7 are placeholders in the current switch-name table, not real playfield inputs.
+                if (MATRIX_SWITCH_MAPPING_MODE && row >= 6) {
+                    continue;
                 }
+                if (row == S20_OUTHOLE_SWITCH_ROW && col == S20_OUTHOLE_SWITCH_COL) {
+                    if (s20OutholeLastRiseMs != 0 && (nowMs - s20OutholeLastRiseMs) < S20_OUTHOLE_RETRIGGER_COOLDOWN_MS) {
+                        s20OutholeSuppressedSticky++;
+                        continue;
+                    }
+                    s20OutholeLastRiseMs = nowMs;
+                }
+
+                matrixSwitchEdgesThisWindow++;
+
+                if (MATRIX_SWITCH_MAPPING_MODE) {
+                    if ((nowMs - lastMatrixSwitchEdgeLogMs) < MATRIX_SWITCH_LOG_DEBOUNCE_MS) {
+                        matrixSwitchLogSuppressedDebounce++;
+                        continue;
+                    }
+                    if (matrixSwitchLoggedThisWindow >= MATRIX_SWITCH_LOG_MAX_PER_REPORT) {
+                        matrixSwitchLogSuppressedRate++;
+                        continue;
+                    }
+
+                    lastMatrixSwitchEdgeLogMs = nowMs;
+                    matrixSwitchLoggedThisWindow++;
+                    Serial.printf("[MAP] rising row=%u col=%u bit=%u name=%s sw=[%02X %02X %02X %02X]\n",
+                                  static_cast<unsigned>(row),
+                                  static_cast<unsigned>(col),
+                                  static_cast<unsigned>(bit),
+                                  captainSwitchName(row, col),
+                                  static_cast<unsigned>(switchBits[0]),
+                                  static_cast<unsigned>(switchBits[1]),
+                                  static_cast<unsigned>(switchBits[2]),
+                                  static_cast<unsigned>(switchBits[3]));
+                    continue;
+                }
+
+                handleGameplaySwitchHit(row, col, nowMs);
             }
         }
     }
@@ -840,7 +1190,38 @@ void handleSwitchEdges(const uint8_t* switchBits) {
 }
 
 bool readMatrixSwitches(uint8_t* switchBits) {
-    return matrixReadRegisters(CAPTAIN_MATRIX_REG_SWITCH_BASE, switchBits, CAPTAIN_SWITCH_BYTES);
+    if (!matrixReadRegisters(CAPTAIN_MATRIX_REG_SWITCH_BASE, switchBits, CAPTAIN_SWITCH_BYTES)) {
+        return false;
+    }
+
+    bool matchesLampFrame = true;
+    for (uint8_t index = 0; index < CAPTAIN_SWITCH_BYTES; index++) {
+        if (switchBits[index] != lastMatrixLampRows[index]) {
+            matchesLampFrame = false;
+            break;
+        }
+    }
+    if (matchesLampFrame) {
+        bool anyNonZero = false;
+        for (uint8_t index = 0; index < CAPTAIN_SWITCH_BYTES; index++) {
+            if (switchBits[index] != 0) {
+                anyNonZero = true;
+                break;
+            }
+        }
+        if (anyNonZero) {
+            memset(switchBits, 0, CAPTAIN_SWITCH_BYTES);
+            matrixSwitchSuppressedLampEcho++;
+        }
+    }
+
+    for (uint8_t row = 6; row < CAPTAIN_SWITCH_ROWS; row++) {
+        for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
+            captainSetBit(switchBits, captainSwitchBitIndex(row, col), false);
+        }
+    }
+
+    return true;
 }
 
 bool readMatrixDiagnostics(uint8_t* diagBytes) {
@@ -915,19 +1296,92 @@ void computeMatrixAttractFrame(uint32_t now, uint8_t* lampRows) {
     }
 }
 
+void buildGameplayLampFrame(uint8_t* lampRows) {
+    // MVP is single-player only, so keep Player 1 lit during live gameplay.
+    lampRows[7] |= captainMatrixLampRowMask(1);  // P1 Player 1
+
+    switch (gameplayState.currentBall) {
+        case 1:
+            lampRows[6] |= captainMatrixLampRowMask(1);  // B1 Ball 1
+            break;
+        case 2:
+            lampRows[6] |= captainMatrixLampRowMask(2);  // B2 Ball 2
+            break;
+        case 3:
+            lampRows[6] |= captainMatrixLampRowMask(3);  // B3 Ball 3
+            break;
+        case 4:
+            lampRows[6] |= captainMatrixLampRowMask(4);  // B4 Ball 4
+            break;
+        case 5:
+            lampRows[5] |= captainMatrixLampRowMask(4);  // B5 Ball 5
+            break;
+        default:
+            break;
+    }
+
+    if (gameplayState.laneAComplete) {
+        lampRows[1] |= captainMatrixLampRowMask(1);
+    }
+    if (gameplayState.laneBComplete) {
+        lampRows[2] |= captainMatrixLampRowMask(1);
+    }
+    if (gameplayState.laneCComplete) {
+        lampRows[3] |= captainMatrixLampRowMask(1);
+    }
+    if (gameplayState.laneDComplete) {
+        lampRows[4] |= captainMatrixLampRowMask(1);
+    }
+
+    if (gameplayState.target1Complete) {
+        lampRows[1] |= captainMatrixLampRowMask(3);
+    }
+    if (gameplayState.target2Complete) {
+        lampRows[4] |= captainMatrixLampRowMask(3);
+    }
+    if (gameplayState.target3Complete) {
+        lampRows[5] |= captainMatrixLampRowMask(1);
+    }
+
+    if (gameplayState.bonusMultiplier >= 2) {
+        lampRows[2] |= captainMatrixLampRowMask(3);
+    }
+    if (gameplayState.bonusMultiplier >= 3) {
+        lampRows[5] |= captainMatrixLampRowMask(3);
+    }
+
+    if (gameplayState.samePlayerLit) {
+        lampRows[4] |= captainMatrixLampRowMask(4);
+        if (((millis() / 250u) % 2u) == 0u) {
+            lampRows[0] |= captainMatrixLampRowMask(4);  // L22 Return Lane R
+            lampRows[2] |= captainMatrixLampRowMask(4);  // L21 Return Lane L
+        }
+    }
+
+    const uint8_t bonusThousands = static_cast<uint8_t>(gameplayState.bonus / 1000u);
+    if (bonusThousands >= 1) lampRows[1] |= captainMatrixLampRowMask(4);
+    if (bonusThousands >= 2) lampRows[3] |= captainMatrixLampRowMask(4);
+    if (bonusThousands >= 3) lampRows[4] |= captainMatrixLampRowMask(2);
+    if (bonusThousands >= 4) lampRows[5] |= captainMatrixLampRowMask(2);
+    if (bonusThousands >= 5) lampRows[2] |= captainMatrixLampRowMask(2);
+    if (bonusThousands >= 6) lampRows[1] |= captainMatrixLampRowMask(2);
+    if (bonusThousands >= 7) lampRows[3] |= captainMatrixLampRowMask(2);
+    if (bonusThousands >= 8) lampRows[0] |= captainMatrixLampRowMask(2);
+    if (bonusThousands >= 9) lampRows[0] |= captainMatrixLampRowMask(3);
+    if (bonusThousands >= 10) lampRows[3] |= captainMatrixLampRowMask(3);
+}
+
 bool writeMatrixCommand(uint32_t now) {
     uint8_t lampRows[CAPTAIN_LAMP_ROWS] = {};
 
     if (MATRIX_SWITCH_MAPPING_MODE) {
         memset(lampRows, 0, sizeof(lampRows));
-    } else if (CAPTAIN_MATRIX_ATTRACT_ENABLED) {
-        computeMatrixAttractFrame(now, lampRows);
+    } else if (gameplayState.mode == GAME_MODE_ATTRACT) {
+        if (CAPTAIN_MATRIX_ATTRACT_ENABLED) {
+            computeMatrixAttractFrame(now, lampRows);
+        }
     } else {
-        // Static bring-up test pattern: L2, L7, L10, L20
-        lampRows[2] |= captainMatrixLampRowMask(1);
-        lampRows[2] |= captainMatrixLampRowMask(3);
-        lampRows[3] |= captainMatrixLampRowMask(3);
-        lampRows[4] |= captainMatrixLampRowMask(4);
+        buildGameplayLampFrame(lampRows);
     }
 
     // Append XOR checksum so the matrix can discard I2C-corrupted frames.
@@ -935,6 +1389,7 @@ bool writeMatrixCommand(uint32_t now) {
     uint8_t xorAcc = 0;
     for (uint8_t i = 0; i < CAPTAIN_LAMP_ROWS; i++) {
         lampFrame[i] = lampRows[i];
+        lastMatrixLampRows[i] = lampRows[i];
         xorAcc ^= lampRows[i];
     }
     lampFrame[CAPTAIN_LAMP_ROWS] = xorAcc;
@@ -997,6 +1452,7 @@ uint16_t updateHeadboxAttractLoop(uint32_t now) {
 
 void setup() {
     Serial.begin(115200);
+    initSolenoids();
     delay(50);
     Serial.println("CAPTAIN_V2 setup start");
     Serial.printf("Attract config: enabled=%u period=%lu minStep=%lu laps=%u\n",
@@ -1012,7 +1468,6 @@ void setup() {
         pinMode(CAPTAIN_HEADBOX_595_LATCH_PIN, OUTPUT);
     }
 
-    initSolenoids();
     resetS2LimiterForNewBall(millis());
     initDirectInputs();
     initHeartbeat();
@@ -1087,6 +1542,8 @@ void setup() {
                     continue;
                 }
 
+                updateGameplayState(now);
+
                 if (now - lastPoll >= POLL_MS) {
                     lastPoll = now;
                     if (CAPTAIN_HEADBOX_ATTRACT_LOOP) {
@@ -1158,7 +1615,10 @@ void setup() {
 
                 if (now - lastDisplayUpdate >= 100) {
                     lastDisplayUpdate = now;
-                    updateLEDScore(displayScore);
+                    if (displayScore != lastDisplayedScore) {
+                        updateLEDScore(displayScore);
+                        lastDisplayedScore = displayScore;
+                    }
                 }
 
                 vTaskDelay(1);

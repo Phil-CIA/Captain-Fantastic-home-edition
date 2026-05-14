@@ -1,0 +1,64 @@
+CONTEXT RECAP - 2026-05-14 Matrix/Control Ghost Input Investigation
+
+## Start Here
+- Read END_OF_DAY_HANDOFF_2026-05-14.md first.
+
+## Active Projects / Ports
+- Matrix board project: Captain-v2-matrix/
+- Active matrix env: captain_matrix_idf
+- Matrix board port: COM4
+- Control board project: Captain-v2/
+- Active control env: captain_control
+- Control board port: COM5
+
+## Current Confirmed Baseline
+- Active matrix source of truth is Captain-v2-matrix/src/matrix_app_main.cpp.
+- Active control source of truth is Captain-v2/src/control_main.cpp.
+- Lamps now look good after separating lamp refresh from switch scanning.
+- Forced local matrix lamp drive was solid, so downstream lamp hardware path is good.
+- User currently has solenoids disconnected for safety.
+
+## Current Blocker
+- Ghost switch input still exists.
+- User reports score and bonus still increment without valid playfield hits.
+- The problem is reduced from earlier, but not solved.
+
+## Strongest Evidence So Far
+- COM4/COM5 captures repeatedly showed COM5 switch bytes tracking the first bytes of COM4 lamp data too closely:
+  - COM4 example lamp bytes: `lamp=[0C,16,04,1E,0C]`
+  - COM5 example switch bytes: `sw0=0x0C sw1=0x16 sw2=0x04 sw3=0x00`
+- This strongly suggests the remaining problem may still involve protocol/readback contamination, not only physical switch noise.
+
+## What Was Already Tried
+1. Control-side score-display rewrite suppression test
+   - not the root cause of the lamp flicker
+
+2. Matrix forced-lamp diagnostic
+   - proved lamp path itself is healthy
+
+3. Separate lamp refresh from switch scan
+   - fixed lamp flicker
+
+4. Slow / clean dedicated switch scan timings
+   - reduced ghosting somewhat
+
+5. Matrix-side FIFO/preload behavior experiments
+   - mixed results, not a full fix
+
+6. Control-side lamp-echo suppression guard
+   - reduced one obvious bad case, but not a full fix
+
+## Immediate Next Step
+- Instrument the protocol truth path.
+- Prove exactly what COM4 returns when COM5 asks for switch registers.
+- Prove exactly what COM5 requested before each suspect frame.
+- Do not start with another broad timing rewrite.
+
+## Hard Constraints
+1. Keep solenoids disconnected until switch truth is trustworthy.
+2. Do not widen back into gameplay changes yet.
+3. Prefer narrow diagnostics and logging over speculative scan rewrites.
+
+## Build / Upload Commands
+- Matrix: platformio run -e captain_matrix_idf -t upload --upload-port COM4
+- Control: platformio run -e captain_control -t upload --upload-port COM5

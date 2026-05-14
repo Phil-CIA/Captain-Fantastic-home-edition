@@ -31,7 +31,11 @@ constexpr uint16_t MATRIX_LAMP_PULSE_MAX_US = 600;
 constexpr uint16_t MATRIX_ROW_BLANK_US = 50;
 constexpr uint16_t MATRIX_ROW_SETTLE_US = 50;
 constexpr uint16_t MATRIX_ROW_POST_HOLD_US = 50;
+constexpr uint16_t MATRIX_SWITCH_SCAN_BLANK_US = 300;
+constexpr uint16_t MATRIX_SWITCH_SCAN_SETTLE_US = 300;
+constexpr uint16_t MATRIX_SWITCH_SCAN_RELEASE_US = 100;
 constexpr uint8_t MATRIX_SWITCH_DEBOUNCE_TICKS = 4;
+constexpr bool MATRIX_INTEGRATED_SWITCH_SCAN = false;
 // Safety-limited proof mode: one row/column path, low duty, short timeout.
 constexpr bool MATRIX_SAFE_PROOF_MODE = false;
 constexpr uint8_t MATRIX_SAFE_PROOF_ROW = 4;  // 0-based (Row 5)
@@ -53,8 +57,8 @@ constexpr uint32_t MATRIX_DIAG_BOOT_TEST_DURATION_MS =
 // Bench-only mode to force one lamp path for conduction debugging.
 constexpr bool MATRIX_DIAG_FORCE_SINGLE_LAMP = false;
 constexpr bool MATRIX_DIAG_SKIP_SWITCH_SCAN = false;
-constexpr uint8_t MATRIX_DIAG_FORCE_ROW = 4;   // 0-based row index (4 => Row 5)
-constexpr uint8_t MATRIX_DIAG_FORCE_COL = 4;   // 0-based lamp column index (4 => L20)
+constexpr uint8_t MATRIX_DIAG_FORCE_ROW = 1;   // 0-based row index (1 => Row 2 / L19 row)
+constexpr uint8_t MATRIX_DIAG_FORCE_COL = 4;   // 0-based lamp column index (4 => L19)
 constexpr uint8_t MATRIX_DIAG_FORCE_PULSE_LEVEL = 10;
 // When true, bypass scan pulsing and hold one row/col frame continuously for DMM checks.
 constexpr bool MATRIX_DIAG_HOLD_ONE_LAMP_DC = false;
@@ -463,7 +467,7 @@ void waitForRowSlotEnd(int64_t rowStartUs) {
     while (esp_timer_get_time() < rowEndUs) {}
 }
 
-void refreshLampMatrixStep() {
+bool refreshLampMatrixStep() {
     static uint8_t row = 0;
 
     if (safeProofActive) {
@@ -473,7 +477,7 @@ void refreshLampMatrixStep() {
         const bool columnEnabled = phaseUs < MATRIX_SAFE_PROOF_ON_US;
         const uint8_t activeColMask = columnEnabled ? colMask : 0;
         writeShiftRegister16(composeShiftFrame(rowMask, activeColMask));
-        return;
+        return false;
     }
 
     if (diagBootTestActive) {
@@ -484,7 +488,7 @@ void refreshLampMatrixStep() {
         const uint8_t activeColMask = columnEnabled ? colMask : 0;
 
         writeShiftRegister16(composeShiftFrame(rowMask, activeColMask));
-        return;
+        return false;
     }
 
     if (MATRIX_DIAG_FORCE_SINGLE_LAMP && MATRIX_DIAG_HOLD_ONE_LAMP_DC) {
@@ -493,7 +497,7 @@ void refreshLampMatrixStep() {
 
         if (!matrixSystemEnabled || !matrixOutputEnabled) {
             writeShiftRegister16(composeShiftFrame(0x00, 0x00));
-            return;
+            return false;
         }
 
         bool columnEnabled = true;
@@ -505,7 +509,7 @@ void refreshLampMatrixStep() {
 
         const uint8_t activeColMask = columnEnabled ? colMask : 0;
         writeShiftRegister16(composeShiftFrame(rowMask, activeColMask));
-        return;
+        return false;
     }
 
     const int64_t rowStartUs = esp_timer_get_time();
@@ -520,7 +524,7 @@ void refreshLampMatrixStep() {
         memset(debounceCandidateBits, 0, sizeof(debounceCandidateBits));
         memset(debounceTickCounters, 0, sizeof(debounceTickCounters));
         row = static_cast<uint8_t>((row + 1) % CAPTAIN_SWITCH_ROWS);
-        return;
+        return false;
     }
 
     const uint8_t rowMask = static_cast<uint8_t>(1u << row);
@@ -530,7 +534,7 @@ void refreshLampMatrixStep() {
     writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
     esp_rom_delay_us(MATRIX_ROW_SETTLE_US);
 
-    if (!MATRIX_DIAG_SKIP_SWITCH_SCAN) {
+    if (MATRIX_INTEGRATED_SWITCH_SCAN && !MATRIX_DIAG_SKIP_SWITCH_SCAN) {
         for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
             const int level = gpio_get_level(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SWITCH_COL_PINS[col]));
             const bool closed = (level == 0);
@@ -542,10 +546,7 @@ void refreshLampMatrixStep() {
         writeShiftRegister16(composeShiftFrame(0x00, 0x00));
         waitForRowSlotEnd(rowStartUs);
         row = static_cast<uint8_t>((row + 1) % CAPTAIN_SWITCH_ROWS);
-        if (!MATRIX_DIAG_SKIP_SWITCH_SCAN && row == 0) {
-            applySwitchDebounceFromSamples();
-        }
-        return;
+        return row == 0;
     }
 
     // Phase C: row + active columns pulse.
@@ -572,14 +573,11 @@ void refreshLampMatrixStep() {
 
     row = static_cast<uint8_t>((row + 1) % CAPTAIN_SWITCH_ROWS);
 
-    if (!MATRIX_DIAG_SKIP_SWITCH_SCAN && row == 0) {
-        applySwitchDebounceFromSamples();
-    }
+    return row == 0;
 }
 
-#if 0
-// NOTE: scanSwitchMatrix() is not currently used; active switch scanning is integrated
-// into the I2C interrupt handler (matrixI2CEventCallback). Keeping this for reference.
+// Switch scanning is kept in a dedicated all-off pass so lamp refresh and switch
+// sampling do not electrically interfere with each other.
 void scanSwitchMatrix() {
     uint8_t sampleBits[CAPTAIN_SWITCH_BYTES] = {};
 
@@ -592,17 +590,20 @@ void scanSwitchMatrix() {
 
     for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
         writeShiftRegister16(composeShiftFrame(0x00, 0x00));
-        esp_rom_delay_us(MATRIX_ROW_BLANK_US);
+        esp_rom_delay_us(MATRIX_SWITCH_SCAN_BLANK_US);
 
         const uint8_t rowMask = static_cast<uint8_t>(1u << row);
         writeShiftRegister16(composeShiftFrame(rowMask, 0x00));
-        esp_rom_delay_us(MATRIX_ROW_SETTLE_US);
+        esp_rom_delay_us(MATRIX_SWITCH_SCAN_SETTLE_US);
 
         for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
             const int level = gpio_get_level(static_cast<gpio_num_t>(CAPTAIN_MATRIX_SWITCH_COL_PINS[col]));
             const bool closed = (level == 0);
             captainSetBit(sampleBits, captainSwitchBitIndex(row, col), closed);
         }
+
+        writeShiftRegister16(composeShiftFrame(0x00, 0x00));
+        esp_rom_delay_us(MATRIX_SWITCH_SCAN_RELEASE_US);
     }
 
     writeShiftRegister16(composeShiftFrame(0x00, 0x00));
@@ -637,7 +638,6 @@ void scanSwitchMatrix() {
         }
     }
 }
-#endif
 
 void fillDiagnosticBytes(uint8_t* diag) {
     diag[0] = 0;
@@ -661,11 +661,6 @@ void queueI2CResponse() {
         txLength = CAPTAIN_SWITCH_BYTES - offset;
         memcpy(txData, switchStateBytes + offset, txLength);
         registerPointer = CAPTAIN_MATRIX_REG_SWITCH_END;
-    } else if (captainMatrixLampRegister(registerPointer)) {
-        const uint8_t offset = static_cast<uint8_t>(registerPointer - CAPTAIN_MATRIX_REG_LAMP_BASE);
-        txLength = CAPTAIN_LAMP_ROWS - offset;
-        memcpy(txData, lampRowRam + offset, txLength);
-        registerPointer = CAPTAIN_MATRIX_REG_LAMP_END;
     } else if (captainMatrixDiagnosticRegister(registerPointer)) {
         uint8_t diag[CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1] = {};
         fillDiagnosticBytes(diag);
@@ -727,15 +722,19 @@ void handleI2CReceive(const uint8_t* packet, size_t length) {
             matrixLampWriteBurstCount++;
             matrixLampWriteByteCount += writeBytes;
         }
+        return;
     }
 
     queueI2CResponse();
 }
 
 void serviceI2C() {
-    uint8_t rxPacket[32] = {};
-    const int bytesRead = i2c_slave_read_buffer(MATRIX_I2C_PORT, rxPacket, sizeof(rxPacket), 0);
-    if (bytesRead > 0) {
+    while (true) {
+        uint8_t rxPacket[32] = {};
+        const int bytesRead = i2c_slave_read_buffer(MATRIX_I2C_PORT, rxPacket, sizeof(rxPacket), 0);
+        if (bytesRead <= 0) {
+            break;
+        }
         matrixI2CRxPacketCount++;
         handleI2CReceive(rxPacket, static_cast<size_t>(bytesRead));
     }
@@ -759,7 +758,6 @@ void initI2CSlave() {
         MATRIX_I2C_TX_BUFFER,
         0));
 
-    queueI2CResponse();
 }
 
 bool writeStatusLedColor(uint8_t red, uint8_t green, uint8_t blue) {
@@ -904,7 +902,7 @@ void logLinkHeartbeat() {
     matrixLastLinkLogMs = nowMs;
     ESP_LOGI(TAG,
              "link rx_pkts=%" PRIu32 " lamp_bursts=%" PRIu32 " lamp_bytes=%" PRIu32
-             " last_cmd=0x%02X pulse_us=%u lamp=[%02X,%02X,%02X,%02X,%02X] sw0=0x%02X",
+             " last_cmd=0x%02X pulse_us=%u lamp=[%02X,%02X,%02X,%02X,%02X] sw=[%02X,%02X,%02X,%02X]",
              matrixI2CRxPacketCount,
              matrixLampWriteBurstCount,
              matrixLampWriteByteCount,
@@ -915,7 +913,10 @@ void logLinkHeartbeat() {
              lampRowRam[2],
              lampRowRam[3],
              lampRowRam[4],
-             switchStateBytes[0]);
+             switchStateBytes[0],
+             switchStateBytes[1],
+             switchStateBytes[2],
+             switchStateBytes[3]);
 }
 }  // namespace
 
@@ -967,20 +968,10 @@ extern "C" void app_main(void) {
         lampPulseWidthLevel = MATRIX_DIAG_FORCE_PULSE_LEVEL;
     }
 
-    // I2C is serviced once per full 8-row scan cycle rather than before every row
-    // step. i2c_slave_read_buffer() acquires a mutex and copies the ring buffer;
-    // calling it 8x per cycle adds variable overhead that shifts row timing and
-    // shows as brightness variation across rows (flicker).
-    uint8_t i2cServiceRowCounter = 0;
-
     while (true) {
-        // Service I2C once per complete scan cycle (every CAPTAIN_SWITCH_ROWS steps).
-        if (i2cServiceRowCounter == 0) {
-            serviceI2C();
-        }
-        if (++i2cServiceRowCounter >= CAPTAIN_SWITCH_ROWS) {
-            i2cServiceRowCounter = 0;
-        }
+        // Service and drain all pending I2C packets every loop so the readback
+        // register window stays aligned with the control board's pointer writes.
+        serviceI2C();
 
         if (safeProofActive) {
             const uint64_t nowUs = static_cast<uint64_t>(esp_timer_get_time());
@@ -1015,7 +1006,10 @@ extern "C" void app_main(void) {
             lampPulseWidthLevel = MATRIX_DIAG_FORCE_PULSE_LEVEL;
         }
 
-        refreshLampMatrixStep();
+        const bool completedLampFrame = refreshLampMatrixStep();
+        if (completedLampFrame && !MATRIX_DIAG_SKIP_SWITCH_SCAN) {
+            scanSwitchMatrix();
+        }
         updateStatusHeartbeatLed();
         updateOledStatus();
         logLinkHeartbeat();
