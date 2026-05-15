@@ -1,0 +1,37 @@
+Matrix link: ready=1 fault=0 wr_ok=598 wr_fail=0 rd_ok=598 rd_fail=0 diag_warn=0 sw0=0x00 sw1=0x00 sw2=0x00 sw3=0x00 sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0030,len:1184
+load:0x40078000,len:13232
+load:0x40080400,len:3028
+entry 0x400805e4
+CAPTAIN_V2 setup start
+Attract config: enabled=0 period=1000 minStep=20 laps=1
+Heartbeat enabled on GPIO15 (WS2812)
+I2S audio ready (DIN=25 BCLK=14 LRCK=13)
+Audio test: startup pattern begin
+Audio test: startup pattern complete
+W25Q probe JEDEC: 0xEF4018
+External flash OK: W25Q128 detected (16MB)
+OTA ready: host=captain-v2-control ip=192.168.0.202
+Matrix device ready at 0x24 (simplified bridge mode, no HT16K33 emulation)
+I2C probe display 0x70: OK (err=0)
+I2C probe matrix 0x24: OK (err=0)
+I2C bus: SDA=21 SCL=22 display=0x70 matrix=0x24
+External flash: W25Q128 SPI CS=32 MOSI=26 MISO=27 SCK=33 size=16777216 bytes
+Captain v2 control board started
+Matrix link: ready=1 fault=0 wr_ok=1 wr_fail=0 rd_ok=1 rd_fail=0 diag_warn=0 sw0=0x00 sw1=0x00 sw2=0x00 sw3=0x00 sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+Matrix link: ready=1 fault=0 wr_ok=68 wr_fail=0 rd_ok=68 rd_fail=0 diag_warn=0 sw0=0x00 sw1=0x00 sw2=0x00 sw3=0x00 sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+Matrix switch burst filter: dropped=10 (max rising edges per poll=4)
+Matrix link: ready=1 fault=0 wr_ok=134 wr_fail=0 rd_ok=134 rd_fail=0 diag_warn=0 sw0=0x00 sw1=0x00 sw2=0x00 sw3=0x00 sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+Matrix link: ready=1 fault=0 wr_ok=201 wr_fail=0 rd_ok=201 rd_fail=0 diag_warn=0 sw0=0xFF sw1=0xFF sw2=0xFF sw3=0xFF sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+Matrix switch burst filter: dropped=7 (max rising edges per poll=4)
+Matrix link: ready=1 fault=0 wr_ok=267 wr_fail=0 rd_ok=267 rd_fail=0 diag_warn=0 sw0=0x00 sw1=0x00 sw2=0x00 sw3=0x00 sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+Matrix switch burst filter: dropped=1 (max rising edges per poll=4)
+Matrix link: ready=1 fault=0 wr_ok=333 wr_fail=0 rd_ok=333 rd_fail=0 diag_warn=0 sw0=0x00 sw1=0x00 sw2=0x00 sw3=0x00 sw_edges=0 sw_log=0 sup_db=0 sup_rate=0 s2_fire=0 s2_cd=0 s2_win=0 s2_ball=0
+Matrix switch burst filter: dropped=10 (max rising edges per poll=4)
+

@@ -17,6 +17,7 @@ This is the rolling handoff file for quick resume. Update this file after each m
 - On-carrier boot status: restored and stable after removing the resistor path tying `Sw_Col_3` to GPIO9.
 - Active firmware mode: matrix switch-scan scaffold (no local shift-register driving in this board variant).
 - Current switch columns in scaffold: `Sw_Col0=GPIO20`, `Sw_Col1=GPIO19`, `Sw_Col2=GPIO18`, `Sw_Col3=GPIO23`.
+- Flash safety: keep solenoid power disconnected while flashing Captain control firmware; GPIO5 in the solenoid harness is not flash-safe.
 
 ## Known-Good Upload Command
 ```powershell

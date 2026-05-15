@@ -26,22 +26,31 @@ This repo contains **multiple PlatformIO projects**:
 - `Captain-v2/platformio.ini`
 - Shared build definitions and source for split-MPU firmware
 - Includes environments for control, matrix, and display-link variants
-- Active bring-up environment: `captain_matrix_c6_idf` (ESP32-C6 matrix board on COM8)
+- Shared source only; not the current matrix bring-up source of truth
 - Separates control logic and switch/lamp matrix scanning across two ESP32 boards
 
 ### 3. Captain v2 board-specific projects
 - `Captain-v2-control/platformio.ini` (control board focused project)
 - `Captain-v2-matrix/platformio.ini` (matrix board focused project)
 - Both reference shared source under `Captain-v2/` and keep board workflows isolated
+- Current active board workflows:
+	- Matrix board: `Captain-v2-matrix`, env `captain_matrix_idf`, COM4
+	- Control board: `Captain-v2`, env `captain_control`, COM5
 
 > **VS Code tip:** Open the specific project folder you are actively working on (`Captain-v2-control/` or `Captain-v2-matrix/`) so tasks and upload settings stay board-specific.
 
 ## Current Development Focus
 
-- Matrix board is the current bring-up target (built hardware available now)
+- Active matrix bring-up/runtime source of truth is `Captain-v2-matrix/src/matrix_app_main.cpp`
 - Matrix MCU appears on I2C as a register-based peripheral at `0x24` (HT16K33-style model)
+- Matrix/control communication path is now usable for gameplay bring-up:
+	- control-side polarity normalization and stability filtering restored usable switch behavior
+	- repeated held-switch scoring was fixed
+	- gameplay-side bumper / slingshot output mapping has been corrected
 - Matrix protocol details and test workflow are documented in:
 	- `Captain-v2-matrix/README.md`
+- Remaining open issue is residual lamp flicker, but the structured blink component was traced to matrix-side periodic debug / housekeeping work in the refresh loop
+- Current stop-point is good enough to continue gameplay bring-up while leaving a later focused flicker cleanup pass
 - Hardware iteration note (March 2026): reduce the high-side rail voltage first to improve BSS84/BSS138 gate-drive margin before pursuing transistor substitutions (documented in `Captain-v2-matrix/README.md`, section 11)
 - Redesign parking lot for next board iteration: `docs/NEXT_ITERATION_RECOMMENDATIONS.md`
 

@@ -21,7 +21,7 @@
 #include "displays.h"
 
 namespace {
-constexpr uint32_t POLL_MS = 15;
+constexpr uint32_t POLL_MS = 30;
 constexpr uint32_t DIRECT_INPUT_POLL_MS = 5;
 constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
 constexpr uint8_t HEARTBEAT_PIN = 15;
@@ -31,9 +31,14 @@ constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
 constexpr uint32_t MATRIX_INIT_RETRY_MS = 1000;
+constexpr uint32_t MATRIX_LAMP_KEEPALIVE_MS = 250;
+constexpr bool MATRIX_TRACE_ENABLED = false;
+constexpr uint32_t MATRIX_TRACE_WINDOW_MS = 15000;
 constexpr uint32_t MATRIX_SWITCH_LOG_DEBOUNCE_MS = 250;
 constexpr uint32_t MATRIX_SWITCH_LOG_REPORT_MS = 1000;
 constexpr uint16_t MATRIX_SWITCH_LOG_MAX_PER_REPORT = 12;
+constexpr uint8_t MATRIX_SWITCH_CONFIRM_POLLS = 5;
+constexpr bool MATRIX_SWITCH_BITS_ACTIVE_HIGH = false;
 // Diagnostic mode: force matrix lamps off to isolate switch mapping from lamp-scan coupling.
 // Disabled for normal solenoid bring-up/gameplay.
 constexpr bool MATRIX_SWITCH_MAPPING_MODE = false;
@@ -98,7 +103,12 @@ uint32_t displayScore = 0;
 uint32_t lastDisplayedScore = UINT32_MAX;
 uint32_t lastDisplayUpdate = 0;
 uint8_t previousSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
+uint8_t stableMatrixSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
+uint8_t candidateMatrixSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
+uint8_t matrixSwitchConfirmTicks[CAPTAIN_SWITCH_ROWS * CAPTAIN_SWITCH_COLS] = {};
 uint8_t lastMatrixLampRows[CAPTAIN_LAMP_ROWS] = {};
+bool matrixLampFramePrimed = false;
+uint32_t lastMatrixLampWriteMs = 0;
 uint16_t headboxPattern = 0;
 bool solenoidActive[SOLENOID_COUNT] = {false};
 uint32_t solenoidStartedAtMs[SOLENOID_COUNT] = {0};
@@ -134,6 +144,10 @@ uint32_t matrixReadFailCount = 0;
 uint32_t matrixDiagReadFailCount = 0;
 uint32_t matrixDiagWarnCount = 0;
 uint32_t lastMatrixLinkSummaryMs = 0;
+uint8_t lastRawMatrixSwitch0 = 0;
+uint8_t lastRawMatrixSwitch1 = 0;
+uint8_t lastRawMatrixSwitch2 = 0;
+uint8_t lastRawMatrixSwitch3 = 0;
 uint8_t lastMatrixSwitch0 = 0;
 uint8_t lastMatrixSwitch1 = 0;
 uint8_t lastMatrixSwitch2 = 0;
@@ -144,6 +158,7 @@ uint32_t matrixSwitchLogSuppressedDebounce = 0;
 uint32_t matrixSwitchLogSuppressedRate = 0;
 uint32_t matrixSwitchSuppressedBurst = 0;
 uint32_t matrixSwitchSuppressedLampEcho = 0;
+uint32_t matrixTraceSeq = 0;
 uint32_t lastMatrixSwitchEdgeLogMs = 0;
 uint32_t s20OutholeLastRiseMs = 0;
 uint32_t s20OutholeSuppressedSticky = 0;
@@ -184,6 +199,36 @@ bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
 
 void updateHeadboxLamps(uint16_t pattern);
 
+bool matrixTraceEnabledNow() {
+    return MATRIX_TRACE_ENABLED && millis() <= MATRIX_TRACE_WINDOW_MS;
+}
+
+void logMatrixTrace(const char* event,
+                    uint8_t reg,
+                    const uint8_t* bytes,
+                    size_t length) {
+    if (!matrixTraceEnabledNow()) {
+        return;
+    }
+
+    const uint8_t b0 = (length > 0 && bytes != nullptr) ? bytes[0] : 0;
+    const uint8_t b1 = (length > 1 && bytes != nullptr) ? bytes[1] : 0;
+    const uint8_t b2 = (length > 2 && bytes != nullptr) ? bytes[2] : 0;
+    const uint8_t b3 = (length > 3 && bytes != nullptr) ? bytes[3] : 0;
+    const uint8_t b4 = (length > 4 && bytes != nullptr) ? bytes[4] : 0;
+
+    Serial.printf("[mx %lu] %s reg=0x%02X len=%u b=[%02X,%02X,%02X,%02X,%02X]\n",
+                  static_cast<unsigned long>(matrixTraceSeq++),
+                  event,
+                  static_cast<unsigned>(reg),
+                  static_cast<unsigned>(length),
+                  static_cast<unsigned>(b0),
+                  static_cast<unsigned>(b1),
+                  static_cast<unsigned>(b2),
+                  static_cast<unsigned>(b3),
+                  static_cast<unsigned>(b4));
+}
+
 void recordMatrixTransactionResult(bool ok) {
     const uint32_t now = millis();
     if (ok) {
@@ -214,6 +259,7 @@ bool matrixWriteRegisters(uint8_t startRegister, const uint8_t* data, size_t len
     Wire.write(startRegister);
     Wire.write(data, len);
     const bool ok = Wire.endTransmission() == 0;
+    logMatrixTrace(ok ? "wr" : "wr_fail", startRegister, data, len);
     recordMatrixTransactionResult(ok);
     return ok;
 }
@@ -222,12 +268,14 @@ bool matrixReadRegisters(uint8_t startRegister, uint8_t* out, size_t len) {
     Wire.beginTransmission(CAPTAIN_MATRIX_I2C_ADDRESS);
     Wire.write(startRegister);
     if (Wire.endTransmission(false) != 0) {
+        logMatrixTrace("rd_ptr_fail", startRegister, nullptr, 0);
         recordMatrixTransactionResult(false);
         return false;
     }
 
     const size_t received = Wire.requestFrom(static_cast<int>(CAPTAIN_MATRIX_I2C_ADDRESS), static_cast<int>(len));
     if (received != len) {
+        logMatrixTrace("rd_len_fail", startRegister, nullptr, received);
         while (Wire.available()) {
             Wire.read();
         }
@@ -238,6 +286,7 @@ bool matrixReadRegisters(uint8_t startRegister, uint8_t* out, size_t len) {
     for (size_t index = 0; index < len; index++) {
         out[index] = static_cast<uint8_t>(Wire.read());
     }
+    logMatrixTrace("rd", startRegister, out, len);
     recordMatrixTransactionResult(true);
     return true;
 }
@@ -270,7 +319,7 @@ void logMatrixLinkSummary(uint32_t now) {
     }
 
     lastMatrixLinkSummaryMs = now;
-    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu sup_le=%lu s20_sticky=%lu s2_fire=%u s2_cd=%lu s2_win=%lu s2_ball=%lu\n",
+    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu raw0=0x%02X raw1=0x%02X raw2=0x%02X raw3=0x%02X sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu sup_le=%lu s20_sticky=%lu s2_fire=%u s2_cd=%lu s2_win=%lu s2_ball=%lu\n",
                   matrixDeviceReady ? 1u : 0u,
                   matrixLinkFaulted ? 1u : 0u,
                   static_cast<unsigned long>(matrixWriteOkCount),
@@ -278,6 +327,10 @@ void logMatrixLinkSummary(uint32_t now) {
                   static_cast<unsigned long>(matrixReadOkCount),
                   static_cast<unsigned long>(matrixReadFailCount),
                   static_cast<unsigned long>(matrixDiagWarnCount),
+                  static_cast<unsigned>(lastRawMatrixSwitch0),
+                  static_cast<unsigned>(lastRawMatrixSwitch1),
+                  static_cast<unsigned>(lastRawMatrixSwitch2),
+                  static_cast<unsigned>(lastRawMatrixSwitch3),
                   static_cast<unsigned>(lastMatrixSwitch0),
                   static_cast<unsigned>(lastMatrixSwitch1),
                   static_cast<unsigned>(lastMatrixSwitch2),
@@ -1015,7 +1068,7 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
             } else if (col == 3) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
-                    fireSolenoid(SOLENOID_S5);
+                    fireSolenoid(SOLENOID_S3);
                 }
                 logGameplayAward("Slingshot L", 100, 0);
             }
@@ -1030,7 +1083,7 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
             } else if (col == 1) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
-                    fireSolenoid(SOLENOID_S3);
+                    fireSolenoid(SOLENOID_S5);
                 }
                 logGameplayAward("Bumper L", 100, 0);
             } else if (col == 2) {
@@ -1053,7 +1106,7 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
             } else if (col == 1) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
-                    fireSolenoid(SOLENOID_S4);
+                    fireSolenoid(SOLENOID_S6);
                 }
                 logGameplayAward("Bumper R", 100, 0);
             } else if (col == 2) {
@@ -1081,7 +1134,7 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
             } else if (col == 3) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
-                    fireSolenoid(SOLENOID_S6);
+                    fireSolenoid(SOLENOID_S4);
                 }
                 logGameplayAward("Slingshot R", 100, 0);
             }
@@ -1133,6 +1186,7 @@ void handleSwitchEdges(const uint8_t* switchBits) {
     // Ignore impossible bursts in normal mode; mapping mode must still log raw edges.
     if (!MATRIX_SWITCH_MAPPING_MODE && risingEdgesThisPoll > MATRIX_MAX_RISING_EDGES_PER_POLL) {
         matrixSwitchSuppressedBurst++;
+        logMatrixTrace("sup_burst", CAPTAIN_MATRIX_REG_SWITCH_BASE, switchBits, CAPTAIN_SWITCH_BYTES);
         memcpy(previousSwitchBits, switchBits, sizeof(previousSwitchBits));
         return;
     }
@@ -1210,6 +1264,7 @@ bool readMatrixSwitches(uint8_t* switchBits) {
             }
         }
         if (anyNonZero) {
+            logMatrixTrace("sup_lamp", CAPTAIN_MATRIX_REG_SWITCH_BASE, switchBits, CAPTAIN_SWITCH_BYTES);
             memset(switchBits, 0, CAPTAIN_SWITCH_BYTES);
             matrixSwitchSuppressedLampEcho++;
         }
@@ -1226,6 +1281,61 @@ bool readMatrixSwitches(uint8_t* switchBits) {
 
 bool readMatrixDiagnostics(uint8_t* diagBytes) {
     return matrixReadRegisters(CAPTAIN_MATRIX_REG_DIAG_BASE, diagBytes, CAPTAIN_MATRIX_REG_DIAG_END - CAPTAIN_MATRIX_REG_DIAG_BASE + 1);
+}
+
+void normalizeMatrixSwitchBits(const uint8_t* rawSwitchBits, uint8_t* normalizedSwitchBits) {
+    memcpy(normalizedSwitchBits, rawSwitchBits, CAPTAIN_SWITCH_BYTES);
+
+    if (!MATRIX_SWITCH_BITS_ACTIVE_HIGH) {
+        for (uint8_t index = 0; index < CAPTAIN_SWITCH_BYTES; index++) {
+            normalizedSwitchBits[index] = static_cast<uint8_t>(~normalizedSwitchBits[index]);
+        }
+    }
+
+    for (uint8_t row = 6; row < CAPTAIN_SWITCH_ROWS; row++) {
+        for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
+            captainSetBit(normalizedSwitchBits, captainSwitchBitIndex(row, col), false);
+        }
+    }
+}
+
+void filterMatrixSwitchBits(const uint8_t* rawSwitchBits, uint8_t* filteredSwitchBits) {
+    for (uint8_t row = 0; row < CAPTAIN_SWITCH_ROWS; row++) {
+        for (uint8_t col = 0; col < CAPTAIN_SWITCH_COLS; col++) {
+            const size_t bitIndex = captainSwitchBitIndex(row, col);
+            const bool rawClosed = captainGetBit(rawSwitchBits, bitIndex);
+            const bool stableClosed = captainGetBit(stableMatrixSwitchBits, bitIndex);
+
+            if (rawClosed == stableClosed) {
+                matrixSwitchConfirmTicks[bitIndex] = 0;
+                captainSetBit(candidateMatrixSwitchBits, bitIndex, stableClosed);
+                continue;
+            }
+
+            const bool candidateClosed = captainGetBit(candidateMatrixSwitchBits, bitIndex);
+            if (rawClosed != candidateClosed) {
+                captainSetBit(candidateMatrixSwitchBits, bitIndex, rawClosed);
+                if (rawClosed) {
+                    captainSetBit(stableMatrixSwitchBits, bitIndex, true);
+                    matrixSwitchConfirmTicks[bitIndex] = 0;
+                    continue;
+                }
+                matrixSwitchConfirmTicks[bitIndex] = 1;
+                continue;
+            }
+
+            if (matrixSwitchConfirmTicks[bitIndex] < 255) {
+                matrixSwitchConfirmTicks[bitIndex]++;
+            }
+
+            if (matrixSwitchConfirmTicks[bitIndex] >= MATRIX_SWITCH_CONFIRM_POLLS) {
+                captainSetBit(stableMatrixSwitchBits, bitIndex, rawClosed);
+                matrixSwitchConfirmTicks[bitIndex] = 0;
+            }
+        }
+    }
+
+    memcpy(filteredSwitchBits, stableMatrixSwitchBits, CAPTAIN_SWITCH_BYTES);
 }
 
 // Matrix lamp attract: cycles through named lamp groups with a dark gap between each.
@@ -1384,12 +1494,19 @@ bool writeMatrixCommand(uint32_t now) {
         buildGameplayLampFrame(lampRows);
     }
 
+    const bool lampFrameChanged = !matrixLampFramePrimed ||
+                                  memcmp(lampRows, lastMatrixLampRows, sizeof(lampRows)) != 0;
+    const bool keepaliveDue = !matrixLampFramePrimed ||
+                              (now - lastMatrixLampWriteMs) >= MATRIX_LAMP_KEEPALIVE_MS;
+    if (!lampFrameChanged && !keepaliveDue) {
+        return true;
+    }
+
     // Append XOR checksum so the matrix can discard I2C-corrupted frames.
     uint8_t lampFrame[CAPTAIN_LAMP_ROWS + 1] = {};
     uint8_t xorAcc = 0;
     for (uint8_t i = 0; i < CAPTAIN_LAMP_ROWS; i++) {
         lampFrame[i] = lampRows[i];
-        lastMatrixLampRows[i] = lampRows[i];
         xorAcc ^= lampRows[i];
     }
     lampFrame[CAPTAIN_LAMP_ROWS] = xorAcc;
@@ -1397,9 +1514,14 @@ bool writeMatrixCommand(uint32_t now) {
     const bool writeOk = matrixWriteRegisters(CAPTAIN_MATRIX_REG_LAMP_BASE, lampFrame, sizeof(lampFrame));
     if (!writeOk) {
         matrixDeviceReady = false;
+        return false;
     }
 
-    return writeOk;
+    memcpy(lastMatrixLampRows, lampRows, sizeof(lastMatrixLampRows));
+    matrixLampFramePrimed = true;
+    lastMatrixLampWriteMs = now;
+
+    return true;
 }
 
 void updateHeadboxLamps(uint16_t pattern) {
@@ -1578,12 +1700,21 @@ void setup() {
                         uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
                         const bool readOk = readMatrixSwitches(switchBits);
                         if (readOk) {
+                            lastRawMatrixSwitch0 = switchBits[0];
+                            lastRawMatrixSwitch1 = switchBits[1];
+                            lastRawMatrixSwitch2 = switchBits[2];
+                            lastRawMatrixSwitch3 = switchBits[3];
+                            uint8_t normalizedSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
+                            normalizeMatrixSwitchBits(switchBits, normalizedSwitchBits);
+                            uint8_t filteredSwitchBits[CAPTAIN_SWITCH_BYTES] = {};
+                            filterMatrixSwitchBits(normalizedSwitchBits, filteredSwitchBits);
                             matrixReadOkCount++;
-                            lastMatrixSwitch0 = switchBits[0];
-                            lastMatrixSwitch1 = switchBits[1];
-                            lastMatrixSwitch2 = switchBits[2];
-                            lastMatrixSwitch3 = switchBits[3];
+                            lastMatrixSwitch0 = filteredSwitchBits[0];
+                            lastMatrixSwitch1 = filteredSwitchBits[1];
+                            lastMatrixSwitch2 = filteredSwitchBits[2];
+                            lastMatrixSwitch3 = filteredSwitchBits[3];
                             matrixSwitch0Seen = true;
+                            memcpy(switchBits, filteredSwitchBits, CAPTAIN_SWITCH_BYTES);
                         } else {
                             matrixReadFailCount++;
                         }
@@ -1604,6 +1735,10 @@ void setup() {
                         headboxPattern = composeHeadboxPattern(displayScore, blink);
                         updateHeadboxLamps(headboxPattern);
                         if (!matrixSwitch0Seen) {
+                            lastRawMatrixSwitch0 = 0;
+                            lastRawMatrixSwitch1 = 0;
+                            lastRawMatrixSwitch2 = 0;
+                            lastRawMatrixSwitch3 = 0;
                             lastMatrixSwitch0 = 0;
                             lastMatrixSwitch1 = 0;
                             lastMatrixSwitch2 = 0;

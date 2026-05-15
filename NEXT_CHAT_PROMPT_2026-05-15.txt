@@ -1,0 +1,51 @@
+CONTEXT RECAP - 2026-05-15 Gameplay Bring-Up / Residual Flicker Stop Point
+
+## Start Here
+- Read END_OF_DAY_HANDOFF_2026-05-15.md first.
+
+## Active Projects / Ports
+- Matrix board project: Captain-v2-matrix/
+- Active matrix env: captain_matrix_idf
+- Matrix board port: COM4
+- Control board project: Captain-v2/
+- Active control env: captain_control
+- Control board port: COM5
+
+## Current Confirmed Baseline
+- Active matrix source of truth is Captain-v2-matrix/src/matrix_app_main.cpp.
+- Active control source of truth is Captain-v2/src/control_main.cpp.
+- Switch transport is working well enough for gameplay again.
+- Control-side polarity / stability filtering fixed the repeated held-switch scoring problem.
+- Bumper / slingshot solenoid routing is corrected.
+- User says switch feel is good / acceptable.
+
+## Current Lamp State
+- The obvious structured blink was traced to matrix-side periodic work in the refresh loop.
+- Matrix status heartbeat is disabled.
+- Matrix periodic idle yield is disabled.
+- Matrix periodic link log is disabled.
+- Some baseline flicker still exists, but user says it is not bad enough to block moving on.
+
+## Current Blocker
+- No hard blocker for continuing gameplay bring-up.
+- Residual flicker is still open, but is currently deferred rather than blocking.
+
+## Strongest Evidence So Far
+- The blink period changed when matrix periodic tasks were changed.
+- Disabling the 2-second idle yield nearly removed the structured blink.
+- Disabling the remaining matrix link log removed the obvious leftover periodic blink.
+- This proves the structured blink was caused by matrix refresh-loop disturbances, not by a mysterious lamp hardware fault.
+
+## Immediate Next Step
+- Continue gameplay bring-up from the current matrix/control baseline.
+- Do not reopen broad switch-transfer rewrites unless a new regression appears.
+- When returning to flicker later, start with serviceI2C() / refresh scheduling boundaries.
+
+## Hard Constraints
+1. Preserve the current switch feel and corrected solenoid routing.
+2. Preserve the current matrix diagnostic state unless intentionally doing a flicker cleanup pass.
+3. Do not drift back into speculative broad timing rewrites.
+
+## Build / Upload Commands
+- Matrix: platformio run -e captain_matrix_idf -t upload --upload-port COM4
+- Control: platformio run -e captain_control -t upload --upload-port COM5

@@ -36,20 +36,32 @@
    - archive/battery-charger/
    - archive/rtos-main-firmware-restore/
 
-## Current Firmware/Repo Status (2026-03-31)
+## Current Firmware/Repo Status (updated 2026-05-14)
 1. Matrix/control firmware link migrated to register-style I2C model (HT16K33-like operation)
-2. Matrix board address: `0x24` on SDA=21/SCL=22
-3. Matrix register windows implemented:
+2. Active matrix board source of truth is the dedicated project:
+   - `Captain-v2-matrix/`
+   - active runtime source: `Captain-v2-matrix/src/matrix_app_main.cpp`
+3. Matrix board address: `0x24` on SDA=21/SCL=22
+4. May 2026 bring-up fixes now verified:
+   - COM5 no longer reads lamp bytes as switch bytes
+   - matrix TX FIFO is preloaded with switch data after lamp writes
+   - repeated control-side burst-filter spam fixed by updating baseline state on suppressed burst frames
+   - quick live mapping spot-check confirmed `S20 Outhole` and `S9 Target 2`
+5. Current normal control state after bring-up validation:
+   - `MATRIX_SWITCH_MAPPING_MODE = false`
+   - `MATRIX_SWITCH_SOLENOIDS_ENABLED = true`
+   - `START_BUTTON_SOLENOID_TEST_ENABLED = false`
+6. Matrix register windows implemented:
    - Lamp RAM `0x00..0x07`
    - Switch bytes `0x40..0x43`
    - Diagnostics `0xF0..0xF3`
-4. Matrix standalone test support segmented into dedicated module:
+7. Matrix standalone test support segmented into dedicated module:
    - `Captain-v2/include/matrix_test_support.h`
    - `Captain-v2/src/matrix_test_support.cpp`
-5. Separate board-focused PlatformIO projects added:
+8. Separate board-focused PlatformIO projects added:
    - `Captain-v2-control/`
    - `Captain-v2-matrix/`
-6. Matrix board datasheet-style firmware contract added:
+9. Matrix board datasheet-style firmware contract added:
    - `Captain-v2-matrix/README.md`
 
 ## Local-Only Files That Should Stay Out Of GitHub

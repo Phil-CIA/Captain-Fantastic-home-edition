@@ -1,0 +1,12 @@
+[0;32mI (818176) captain_matrix: link rx_pkts=46815 lamp_bursts=45704 lamp_bytes=365603 last_cmd=0x00 pulse_us=600 lamp=[00,00,00,00,00] sw=[FE,FF,FF,FF][0m
+[0;32mI (819186) captain_matrix: link rx_pkts=46881 lamp_bursts=45770 lamp_bytes=366131 last_cmd=0x00 pulse_us=600 lamp=[0C,04,00,0C,00] sw=[FE,FF,FF,FF][0m
+[0;32mI (820186) captain_matrix: link rx_pkts=46947 lamp_bursts=45836 lamp_bytes=366659 last_cmd=0x00 pulse_us=600 lamp=[00,00,08,00,00] sw=[FE,FF,FF,FF][0m
+[0;32mI (821196) captain_matrix: link rx_pkts=47013 lamp_bursts=45902 lamp_bytes=367187 last_cmd=0x00 pulse_us=600 lamp=[10,00,10,00,10] sw=[FE,FF,FF,FF][0m
+[0;32mI (822196) captain_matrix: link rx_pkts=47079 lamp_bursts=45968 lamp_bytes=367715 last_cmd=0x00 pulse_us=600 lamp=[1F,1E,1E,1E,1E] sw=[FE,FF,FF,FF][0m
+[0;32mI (823216) captain_matrix: link rx_pkts=47145 lamp_bursts=46034 lamp_bytes=368243 last_cmd=0x00 pulse_us=600 lamp=[00,02,02,02,02] sw=[FE,FF,FF,FF][0m
+[0;32mI (824236) captain_matrix: link rx_pkts=47212 lamp_bursts=46101 lamp_bytes=368779 last_cmd=0x00 pulse_us=600 lamp=[00,08,00,00,08] sw=[FE,FF,FF,FF][0m
+[0;32mI (825236) captain_matrix: link rx_pkts=47277 lamp_bursts=46166 lamp_bytes=369299 last_cmd=0x00 pulse_us=600 lamp=[00,10,04,10,04] sw=[FE,FF,FF,FF][0m
+[0;32mI (826246) captain_matrix: link rx_pkts=47344 lamp_bursts=46233 lamp_bytes=369835 last_cmd=0x00 pulse_us=600 lamp=[00,00,08,00,00] sw=[FE,FF,FF,FF][0m
+[0;32mI (827246) captain_matrix: link rx_pkts=47409 lamp_bursts=46298 lamp_bytes=370355 last_cmd=0x00 pulse_us=600 lamp=[10,00,10,00,10] sw=[FE,FF,FF,FF][0m
+[0;32mI (828256) captain_matrix: link rx_pkts=47476 lamp_bursts=46365 lamp_bytes=370891 last_cmd=0x00 pulse_us=600 lamp=[00,00,00,00,00] sw=[FE,FF,FF,FF][0m
+

@@ -73,7 +73,8 @@ and bring-up checklist.  Source: `include/spi_handshake_config.h`,
 - Lamp matrix names and coordinates mapped from legacy firmware (`M1..M8` × lamp columns)
 - Matrix GPIO pin map centralized in one file for both firmware targets
 - Headbox `2x74HC595` lamp map is implemented from schematic (`Ball`, `Player`, `Tilt`, `Game Over`)
-- Solenoid outputs are mapped to direct GPIO (not shift-register): `S2=GPIO23`, `S3=GPIO19`, `S4=GPIO18`, `S5=GPIO5`, `S6=GPIO17`
+- Solenoid outputs are mapped to direct GPIO (not shift-register): `S2=GPIO23`, `S3=GPIO19`, `S4=GPIO18`, `S5=GPIO16`, `S6=GPIO17`
+- Flash safety note: keep solenoid power removed while uploading firmware; avoid leaving coil power on during reset/flash windows.
 - Four cabinet/control inputs moved off matrix to direct GPIO: `SW1=GPIO36`, `SW2=GPIO39`, `Tilt=GPIO34`, `Start=GPIO35`
 - I2S audio output mapped for MAX98357A: `DIN=GPIO25`, `BCLK=GPIO14`, `LRCK=GPIO13`
 - External SPI flash upgraded to `W25Q128` (16MB) with same SPI mapping: `CS=GPIO32`, `MOSI=GPIO26`, `MISO=GPIO27`, `SCK=GPIO33`

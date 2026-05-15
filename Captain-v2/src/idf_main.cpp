@@ -3,6 +3,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 
 namespace {
@@ -10,6 +11,7 @@ static const char* TAG = "captain_idf";
 
 constexpr uint8_t MATRIX_ROWS = 8;
 constexpr uint8_t MATRIX_COLS = 4;
+constexpr uint32_t SERIAL_HEARTBEAT_MS = 500;
 
 // Pin map aligned to current carrier wiring.
 // GPIO9 (Sw_Col3) is intentionally reserved because it is a boot strap pin.
@@ -24,6 +26,8 @@ constexpr gpio_num_t COL_PINS[MATRIX_COLS] = {
     GPIO_NUM_20, GPIO_NUM_19, GPIO_NUM_18, SW_COL3_REMAP_PIN
 };
 uint8_t switchPressedMaskByRow[MATRIX_ROWS] = {};
+bool serialHeartbeatOn = false;
+uint32_t serialHeartbeatLastMs = 0;
 
 inline bool isUsableOutputPin(gpio_num_t pin) {
     return pin != GPIO_NUM_NC;
@@ -99,11 +103,23 @@ void initGpio() {
     gpio_config(&colCfg);
 
 }
+
+void updateSerialHeartbeat() {
+    const uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if ((nowMs - serialHeartbeatLastMs) < SERIAL_HEARTBEAT_MS) {
+        return;
+    }
+
+    serialHeartbeatLastMs = nowMs;
+    serialHeartbeatOn = !serialHeartbeatOn;
+    ESP_LOGI(TAG, "heartbeat=%s uptime_ms=%lu", serialHeartbeatOn ? "ON" : "OFF", static_cast<unsigned long>(nowMs));
+}
 }
 
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Captain ESP-IDF matrix scaffold started");
     initGpio();
+    serialHeartbeatLastMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
 
     TickType_t loopDelayTicks = pdMS_TO_TICKS(5);
     if (loopDelayTicks == 0) {
@@ -113,6 +129,7 @@ extern "C" void app_main(void) {
     uint32_t tick = 0;
     while (true) {
         refreshLampMatrixStep();
+        updateSerialHeartbeat();
 
         if ((tick % 200) == 0) {
             ESP_LOGI(TAG, "matrix scaffold alive tick=%lu", static_cast<unsigned long>(tick));

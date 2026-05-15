@@ -192,6 +192,26 @@ Cross-reference:
 
 Current work moved to an intentionally stripped `bare-bones` firmware path to remove non-essential runtime influences (I2C service, switch scan, OLED updates, matrix scheduler complexity).
 
+### Current verified status after May 14 communication fixes
+
+- Active bring-up/runtime source of truth is `Captain-v2-matrix/src/matrix_app_main.cpp` with env `captain_matrix_idf`.
+- Matrix/control register communication is now verified end-to-end.
+- Control board no longer misreads lamp bytes as switch bytes.
+- Matrix slave now preloads switch-register data after lamp writes so the next master read returns real switch bytes.
+- Control-side repeated burst-filter spam was fixed by updating the previous-frame baseline even when an impossible burst frame is suppressed.
+- Quick live mapping spot-check confirmed at least:
+  - `S20 Outhole` -> row 0, col 0
+  - `S9 Target 2` -> row 4, col 2
+- Current normal control state after bring-up:
+  - matrix-triggered actions enabled
+  - manual START-button solenoid test remains disabled
+
+### Remaining open items
+
+1. Full switch-map re-walk is still incomplete.
+2. Broader gameplay/coil soak validation after re-enable is still pending.
+3. Decide later whether the expanded COM4 switch-byte heartbeat log should remain or be reduced.
+
 ### What was observed
 
 - With several previous test images, row-selection appeared functional but column selection could collapse into whole-row activation.

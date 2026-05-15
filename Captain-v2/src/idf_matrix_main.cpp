@@ -3,9 +3,13 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_rom_sys.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
+#include "driver/rmt_encoder.h"
+#include "driver/rmt_tx.h"
 
 namespace {
 static const char* TAG = "captain_matrix_idf";
@@ -13,19 +17,19 @@ static const char* TAG = "captain_matrix_idf";
 constexpr uint8_t MATRIX_ROWS = 8;
 constexpr uint8_t MATRIX_COLS = 4;
 
-// Matches current matrix mapping used in Arduino firmware.
+// Matches May 12 matrix bring-up wiring used by the shared mapping.
 constexpr gpio_num_t ROW_PINS[MATRIX_ROWS] = {
-    GPIO_NUM_15, GPIO_NUM_16, GPIO_NUM_17, GPIO_NUM_5,
-    GPIO_NUM_18, GPIO_NUM_19, GPIO_NUM_23, GPIO_NUM_13
+    GPIO_NUM_0, GPIO_NUM_1, GPIO_NUM_2, GPIO_NUM_3,
+    GPIO_NUM_4, GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_7
 };
 
 constexpr gpio_num_t COL_PINS[MATRIX_COLS] = {
-    GPIO_NUM_35, GPIO_NUM_34, GPIO_NUM_39, GPIO_NUM_36
+    GPIO_NUM_20, GPIO_NUM_18, GPIO_NUM_21, GPIO_NUM_19
 };
 
-constexpr gpio_num_t SR_DATA_PIN = GPIO_NUM_2;
-constexpr gpio_num_t SR_CLOCK_PIN = GPIO_NUM_12;
-constexpr gpio_num_t SR_LATCH_PIN = GPIO_NUM_4;
+constexpr gpio_num_t SR_DATA_PIN = GPIO_NUM_15;
+constexpr gpio_num_t SR_CLOCK_PIN = GPIO_NUM_22;
+constexpr gpio_num_t SR_LATCH_PIN = GPIO_NUM_23;
 
 constexpr uint8_t SR_BIT_COL0 = 0;
 constexpr uint8_t SR_BIT_COL1 = 1;
@@ -36,8 +40,18 @@ constexpr uint8_t SR_BIT_COL4 = 4;
 constexpr uint8_t LAMP_ROWS = 8;
 constexpr uint8_t LAMP_COLS = 5;
 constexpr uint8_t LAMP_BYTES = (LAMP_ROWS * LAMP_COLS + 7) / 8;
+constexpr gpio_num_t STATUS_RGB_PIN = GPIO_NUM_8;
+constexpr uint32_t STATUS_HEARTBEAT_MS = 500;
+constexpr uint32_t SERIAL_HEARTBEAT_MS = 500;
+constexpr uint8_t STATUS_ON_GREEN = 64;
 
 uint8_t lampBits[LAMP_BYTES] = {};
+rmt_channel_handle_t statusLedChannel = nullptr;
+rmt_encoder_handle_t statusLedEncoder = nullptr;
+bool statusLedOn = false;
+uint32_t statusLastHeartbeatMs = 0;
+bool serialHeartbeatOn = false;
+uint32_t serialHeartbeatLastMs = 0;
 
 inline size_t lampBitIndex(uint8_t row, uint8_t col) {
     return static_cast<size_t>(row) * LAMP_COLS + col;
@@ -91,7 +105,7 @@ void refreshLampMatrixStep() {
     writeShiftRegister16(shiftValue);
 
     gpio_set_level(ROW_PINS[row], 0);
-    ets_delay_us(250);
+    esp_rom_delay_us(250);
     gpio_set_level(ROW_PINS[row], 1);
 
     row = static_cast<uint8_t>((row + 1) % MATRIX_ROWS);
@@ -140,16 +154,112 @@ void runLampChasePattern(uint32_t tick) {
     const uint8_t col = static_cast<uint8_t>((tick / 5) % LAMP_COLS);
     setBit(lampBits, lampBitIndex(row, col), true);
 }
+
+void setStatusLedColor(uint8_t red, uint8_t green, uint8_t blue) {
+    if (statusLedChannel == nullptr || statusLedEncoder == nullptr) {
+        return;
+    }
+
+    uint8_t grb[3] = {green, red, blue};
+    rmt_transmit_config_t txConfig = {};
+    txConfig.loop_count = 0;
+
+    const esp_err_t txErr = rmt_transmit(
+        statusLedChannel,
+        statusLedEncoder,
+        grb,
+        sizeof(grb),
+        &txConfig);
+    if (txErr == ESP_OK) {
+        rmt_tx_wait_all_done(statusLedChannel, pdMS_TO_TICKS(10));
+        // WS2812 needs a low-level latch/reset window after each frame.
+        esp_rom_delay_us(80);
+    }
+}
+
+void initStatusHeartbeatLed() {
+    rmt_tx_channel_config_t txChannelConfig = {};
+    txChannelConfig.clk_src = RMT_CLK_SRC_DEFAULT;
+    txChannelConfig.gpio_num = STATUS_RGB_PIN;
+    txChannelConfig.mem_block_symbols = 64;
+    txChannelConfig.resolution_hz = 10000000;
+    txChannelConfig.trans_queue_depth = 4;
+
+    esp_err_t err = rmt_new_tx_channel(&txChannelConfig, &statusLedChannel);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "status LED channel init failed on GPIO%u: %s", static_cast<unsigned>(STATUS_RGB_PIN), esp_err_to_name(err));
+        statusLedChannel = nullptr;
+        return;
+    }
+
+    rmt_bytes_encoder_config_t bytesEncoderConfig = {};
+    bytesEncoderConfig.bit0.level0 = 1;
+    bytesEncoderConfig.bit0.duration0 = 4;
+    bytesEncoderConfig.bit0.level1 = 0;
+    bytesEncoderConfig.bit0.duration1 = 8;
+    bytesEncoderConfig.bit1.level0 = 1;
+    bytesEncoderConfig.bit1.duration0 = 8;
+    bytesEncoderConfig.bit1.level1 = 0;
+    bytesEncoderConfig.bit1.duration1 = 4;
+    bytesEncoderConfig.flags.msb_first = 1;
+
+    err = rmt_new_bytes_encoder(&bytesEncoderConfig, &statusLedEncoder);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "status LED encoder init failed: %s", esp_err_to_name(err));
+        statusLedEncoder = nullptr;
+        return;
+    }
+
+    err = rmt_enable(statusLedChannel);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "status LED RMT enable failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    setStatusLedColor(0, 0, 0);
+    statusLastHeartbeatMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    ESP_LOGI(TAG, "status LED ready on GPIO%u (WS2812 via RMT)", static_cast<unsigned>(STATUS_RGB_PIN));
+}
+
+void updateStatusHeartbeatLed() {
+    if (statusLedChannel == nullptr || statusLedEncoder == nullptr) {
+        return;
+    }
+
+    const uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if ((nowMs - statusLastHeartbeatMs) < STATUS_HEARTBEAT_MS) {
+        return;
+    }
+
+    statusLastHeartbeatMs = nowMs;
+    statusLedOn = !statusLedOn;
+    setStatusLedColor(0, statusLedOn ? STATUS_ON_GREEN : 0, 0);
+}
+
+void updateSerialHeartbeat() {
+    const uint32_t nowMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
+    if ((nowMs - serialHeartbeatLastMs) < SERIAL_HEARTBEAT_MS) {
+        return;
+    }
+
+    serialHeartbeatLastMs = nowMs;
+    serialHeartbeatOn = !serialHeartbeatOn;
+    ESP_LOGI(TAG, "heartbeat=%s uptime_ms=%lu", serialHeartbeatOn ? "ON" : "OFF", static_cast<unsigned long>(nowMs));
+}
 }
 
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "Captain matrix ESP-IDF migration scaffold started");
     initGpio();
+    initStatusHeartbeatLed();
+    serialHeartbeatLastMs = static_cast<uint32_t>(esp_timer_get_time() / 1000ULL);
 
     uint32_t tick = 0;
     while (true) {
         runLampChasePattern(tick);
         refreshLampMatrixStep();
+        updateStatusHeartbeatLed();
+        updateSerialHeartbeat();
 
         if ((tick % 200) == 0) {
             ESP_LOGI(TAG, "matrix scaffold alive tick=%lu", static_cast<unsigned long>(tick));
