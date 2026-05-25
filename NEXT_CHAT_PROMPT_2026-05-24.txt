@@ -1,0 +1,40 @@
+CONTEXT RECAP - 2026-05-24 Captain Flicker Baseline Reset
+
+## Start Here
+- Read END_OF_DAY_HANDOFF_2026-05-24.md first.
+
+## Active Projects / Ports
+- Matrix board project source: Captain-v2-matrix/
+- Matrix build/upload path that worked: C:\_tmp\captain_v2_matrix
+- Active matrix env: captain_matrix_idf
+- Matrix board port: COM4
+- Control board project: Captain-v2/
+- Active control env: captain_control
+- Control board port: COM5
+
+## Current Confirmed Baseline
+- COM4 was successfully reflashed with the known-good matrix baseline again.
+- COM5 was successfully reflashed with the current alternating read/write control build.
+- Active matrix source of truth is Captain-v2-matrix/src/matrix_app_main.cpp.
+- Active control source of truth is Captain-v2/src/control_main.cpp.
+- The current control probe alternates between matrix lamp writes and matrix switch reads instead of doing the original immediate write+read pair.
+
+## Current Stop Point
+- The session should restart from machine observation, not from more environment surgery.
+- The main unanswered question is how the machine behaves with COM4 frozen on the restored baseline and COM5 on the alternating build.
+
+## Hard Constraints
+1. Leave COM4 untouched at the start of the next session.
+2. Do not reopen matrix-side code changes before observing the current flashed pair.
+3. If matrix flashing becomes necessary again, prefer C:\_tmp\captain_v2_matrix.
+4. Treat local PlatformIO state as fragile; environment issues were real this session.
+
+## Likely Next Step
+- Power the machine and observe lamp flicker and switch response with the current COM4/COM5 pair.
+- Record whether flicker is gone, reduced, unchanged, or merely slower.
+- Record whether switch response is acceptable or too delayed.
+
+## Build / Upload Commands
+- Matrix upload from mirror: Set-Location C:\_tmp\captain_v2_matrix; platformio run -e captain_matrix_idf -t upload --upload-port COM4
+- Control build: Set-Location Captain-v2; platformio run -e captain_control
+- Control upload: Set-Location Captain-v2; platformio run -e captain_control -t upload --upload-port COM5

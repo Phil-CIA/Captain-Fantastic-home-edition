@@ -24,7 +24,7 @@ constexpr uint16_t CAPTAIN_AUDIO_STARTUP_TONE_MS = 100;
 constexpr uint16_t CAPTAIN_AUDIO_STARTUP_GAP_MS = 35;
 
 // Keeps I2S clocks/data active in short bursts for easier logic-analyzer probing.
-constexpr bool CAPTAIN_AUDIO_CONTINUOUS_DIAGNOSTIC = true;
+constexpr bool CAPTAIN_AUDIO_CONTINUOUS_DIAGNOSTIC = false;
 constexpr uint32_t CAPTAIN_AUDIO_CONTINUOUS_INTERVAL_MS = 90;
 constexpr uint16_t CAPTAIN_AUDIO_CONTINUOUS_TONE_MS = 45;
 

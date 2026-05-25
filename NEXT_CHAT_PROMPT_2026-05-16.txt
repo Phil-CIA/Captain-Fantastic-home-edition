@@ -1,0 +1,63 @@
+CONTEXT RECAP - 2026-05-16 Gameplay Audio Bring-Up Stop Point
+
+## Start Here
+- Read END_OF_DAY_HANDOFF_2026-05-16.md first.
+
+## Active Projects / Ports
+- Matrix board project: Captain-v2-matrix/
+- Active matrix env: captain_matrix_idf
+- Matrix board port: COM4
+- Control board project: Captain-v2/
+- Active control env: captain_control
+- Control board port: COM5
+
+## Current Confirmed Baseline
+- Active matrix source of truth is Captain-v2-matrix/src/matrix_app_main.cpp.
+- Active control source of truth is Captain-v2/src/control_main.cpp.
+- Matrix flicker work is deferred; preserve the current matrix diagnostic state.
+- Control firmware gameplay rules were already reconciled earlier:
+  - any 2 of 3 targets = 2x bonus
+  - all 3 targets = 3x bonus
+  - S2 serve-ball protection was removed; serve fires directly
+- Audio bring-up is now the active focus.
+
+## Current Audio Runtime State
+- Gameplay audio is wired into Captain-v2/src/control_main.cpp.
+- Continuous diagnostic beeping is disabled in Captain-v2/include/audio_i2s_config.h.
+- Boot startup audio test is still enabled.
+- START now plays a longer game-start routine before serving the ball.
+- Bonus countdown pacing is currently 350 ms per step.
+- Score-count tones are currently approximated as a low base pulse around 400 Hz plus a higher accent pulse.
+- This is still sequential approximation, not true simultaneous dual-tone mixing.
+
+## Current Target Truth
+- Target 1 = +500 score, +2000 bonus, 500-style count sound
+- Target 2 = +500 score, +2000 bonus, 500-style count sound
+- Target 3 = +1000 score, +2000 bonus, 1000-style count sound
+
+## Current Stop Point
+- Latest control firmware build succeeded.
+- Latest control firmware upload to COM5 succeeded.
+- The newest audio retune has NOT yet been fully verified on the machine by ear.
+
+## Immediate Next Step
+- Hardware-verify the newest audio pass on the machine.
+- Verify in this order:
+  - START routine length and serve timing
+  - Target 1 and Target 2 count-to-five character / pacing
+  - Target 3 count-to-ten character / pacing
+  - bonus countdown pacing
+
+## Hard Constraints
+1. Do not reopen matrix flicker work by default.
+2. Keep continuous audio diagnostic off unless explicitly bench testing.
+3. Do not change gameplay scoring rules again unless a real mismatch is found.
+4. Prefer retuning audio constants before attempting deeper architectural changes.
+
+## Build / Upload Commands
+- Matrix: platformio run -e captain_matrix_idf -t upload --upload-port COM4
+- Control: platformio run -e captain_control -t upload --upload-port COM5
+
+## Likely Next Engineering Decision
+- If the sound is close but not right: retune pitch / pulse / gap constants.
+- If the sound still lacks the original machine character: implement true dual-tone mixing in the I2S generator.

@@ -1,0 +1,26 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../WorkStation"
+		},
+		{
+			"path": "../../OneDrive/Pinball graphics/Captain Fabtastic"
+		}
+	],
+	"settings": {
+		"powershell.cwd": "WorkStation",
+		"chat.tools.terminal.autoApprove": {
+			"/^Set-Location \"C:\\\\Users\\\\user\\\\AppData\\\\Local\\\\Programs\\\\Microsoft VS Code\"; git clone https://github\\.com/Phil-CIA/Pinball-Sw-Lamp-Matrix\\.git$/": {
+				"approve": true,
+				"matchCommandLine": true
+			},
+			"/^Set-Location \"C:\\\\Users\\\\user\\\\Projects\\\\Pinball-Sw-Lamp-Matrix\"\ngit config user\\.email \"copilot@github\\.com\"\ngit config user\\.name \"GitHub Copilot\"\ngit add -A\ngit status$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
+		}
+	}
+}

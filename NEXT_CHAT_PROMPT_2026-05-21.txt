@@ -1,0 +1,84 @@
+CONTEXT RECAP - 2026-05-21 WS2812 Backglass Bring-Up Stop Point
+
+## Start Here
+- Read END_OF_DAY_HANDOFF_2026-05-21.md first.
+
+## Active Projects / Ports
+- Matrix board project: Captain-v2-matrix/
+- Active matrix env: captain_matrix_idf
+- Matrix board port: COM4
+- Control board project: Captain-v2/
+- Active control env: captain_control
+- Control board port: COM5
+
+## Current Confirmed Baseline
+- Active matrix source of truth is Captain-v2-matrix/src/matrix_app_main.cpp.
+- Active control source of truth is Captain-v2/src/control_main.cpp.
+- WS2812 backglass strip is now proven on real hardware from the live control board on GPIO15.
+- Measured strip layout is stored as a 15-segment map in Captain-v2/src/control_main.cpp.
+- The current flashed LED test is a fixed-color zone walker built on that measured segment map.
+- Brighter colors were intentionally chosen because dark hues did not read well through the backglass.
+
+## Current LED Runtime State
+- HEARTBEAT_SEGMENT_MAP_MODE = false
+- HEARTBEAT_ZONE_MAP_MODE = true
+- HEARTBEAT_ACTIVE_LED_COUNT = 300
+- brightness cap is derived from a 3A full-white budget across 300 LEDs
+- current pattern walks named backglass art zones one at a time
+
+## Current Measured Segment Truth
+- Seg 0 = 1-11
+- Seg 1 = 12-22
+- Seg 2 = 23-52
+- Seg 3 = 53-84
+- Seg 4 = 85-114
+- Seg 5 = 115-137
+- Seg 6 = 138-146
+- Seg 7 = 147-168
+- Seg 8 = 169-194
+- Seg 9 = 195-212
+- Seg 10 = 213-231
+- Seg 11 = 232-245
+- Seg 12 = 246-264
+- Seg 13 = 265-272
+- Seg 14 = 273-300
+
+## Current Zone Labels
+- start marker
+- score panel
+- right creature edge
+- title banner
+- left moon edge
+- bottom stage
+- lower-left transition
+- right interior column
+- organ and rocket trail
+- performer row
+- center split
+- captain ring
+- rabbit and left interior
+
+## Current Stop Point
+- Latest control firmware build succeeded.
+- Latest control firmware upload to COM5 succeeded.
+- Zone walker is flashed and visually usable as the current tuning baseline.
+- Controlled-lamp flicker interaction was observed during bright strip testing but deferred on purpose.
+
+## Immediate Next Step
+- Verify the current fixed-color zone walker through the real backglass.
+- Decide which zone groupings are correct and which segments need reassignment.
+- Freeze a first-pass production zone layout before implementing gameplay lighting effects.
+
+## Hard Constraints
+1. Do not reopen broad matrix flicker work by default.
+2. Keep the 3A software current cap unless intentionally choosing to revisit strip power policy.
+3. Prefer editing the zone table over inventing more test patterns.
+4. Do not discard the measured segment map unless a new physical recount proves it wrong.
+
+## Build / Upload Commands
+- Control build: platformio run -e captain_control
+- Control upload: platformio run -e captain_control -t upload --upload-port COM5
+
+## Likely Next Engineering Decision
+- If the current zone layout is close: patch only the incorrect zone memberships.
+- If the layout is accepted: implement one simple gameplay-reactive lighting behavior using the frozen zone table.

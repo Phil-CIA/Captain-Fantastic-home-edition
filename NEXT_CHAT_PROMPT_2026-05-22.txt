@@ -1,0 +1,42 @@
+CONTEXT RECAP - 2026-05-22 Captain Backglass Choreography Baseline
+
+## Start Here
+- Read END_OF_DAY_HANDOFF_2026-05-22.md first.
+
+## Active Projects / Ports
+- Matrix board project: Captain-v2-matrix/
+- Active matrix env: captain_matrix_idf
+- Matrix board port: COM4
+- Control board project: Captain-v2/
+- Active control env: captain_control
+- Control board port: COM5
+
+## Current Confirmed Baseline
+- Active matrix source of truth is Captain-v2-matrix/src/matrix_app_main.cpp.
+- Active control source of truth is Captain-v2/src/control_main.cpp.
+- COM5 firmware builds and uploads cleanly.
+- WS2812 renderer now defaults to gameplay mode, not zone-map tuning mode.
+- Warm incandescent GI base is the current accepted palette direction.
+- Feature-specific gameplay pulses are implemented.
+- Scoring shimmer overlay is implemented.
+- Lane-set and 3x bonus milestone sweeps are implemented.
+- Attract and game-over are richer than the previous simple patterns.
+
+## Current Stop Point
+- The lighting package is close enough to stand as the current baseline.
+- User felt the warm palette was good enough and the session was winding down.
+- Current goal is no longer broad creation; next work should be focused tuning or a deliberate shift to another subsystem.
+
+## Hard Constraints
+1. Do not reopen broad matrix flicker work by default.
+2. Keep the 3A software current cap unless intentionally revisiting strip power policy.
+3. Do not reopen older audio verification unless choosing that scope on purpose.
+4. Prefer one targeted tuning change at a time if backglass work continues.
+
+## Likely Next Step
+- If continuing LED work: tune only one mode or one specific visual mismatch.
+- If moving on: leave the backglass package as-is and switch to the next hardware/firmware priority.
+
+## Build / Upload Commands
+- Control build: platformio run -e captain_control
+- Control upload: platformio run -e captain_control -t upload --upload-port COM5

@@ -17,6 +17,11 @@ CONTEXT RECAP - 2026-05-15 Gameplay Bring-Up / Residual Flicker Stop Point
 - Switch transport is working well enough for gameplay again.
 - Control-side polarity / stability filtering fixed the repeated held-switch scoring problem.
 - Bumper / slingshot solenoid routing is corrected.
+- Control gameplay rules were reconciled further during this session:
+	- bonus awards are now treated in 1000-point increments for the previously mismatched 500/50 cases
+	- any 2 of the 3 targets now raise bonus multiplier to 2x
+	- all 3 targets raise bonus multiplier to 3x
+	- temporary S2 serve-ball protection was removed; serve now fires S2 directly
 - User says switch feel is good / acceptable.
 
 ## Current Lamp State
@@ -40,6 +45,20 @@ CONTEXT RECAP - 2026-05-15 Gameplay Bring-Up / Residual Flicker Stop Point
 - Continue gameplay bring-up from the current matrix/control baseline.
 - Do not reopen broad switch-transfer rewrites unless a new regression appears.
 - When returning to flicker later, start with serviceI2C() / refresh scheduling boundaries.
+
+## Current Live Verification Order
+- Upload/running control firmware is on COM5 and booted cleanly after the scoring-rule reconciliation.
+- Verify score/bonus deltas first on the changed rules:
+	- S22 Return Lane R = +500 score, +1000 bonus
+	- S21 Return Lane L = +500 score, +1000 bonus
+	- S18 Bonus Lane L = +500 score, +1000 bonus
+	- S19 Bonus Lane R = +500 score, +1000 bonus
+	- S12 Side Switch 1 = +50 score, +1000 bonus
+	- S13 Side Switch 2 = +50 score, +1000 bonus
+- Then verify target progression:
+	- any 2 of Target 1 / Target 2 / Target 3 should light 2x bonus
+	- all 3 should light 3x bonus
+- Then verify serve/drain behavior still feels correct with direct S2 firing.
 
 ## Hard Constraints
 1. Preserve the current switch feel and corrected solenoid routing.

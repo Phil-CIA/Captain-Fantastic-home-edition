@@ -25,13 +25,31 @@ constexpr uint32_t POLL_MS = 30;
 constexpr uint32_t DIRECT_INPUT_POLL_MS = 5;
 constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
 constexpr uint8_t HEARTBEAT_PIN = 15;
-constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
+constexpr uint16_t HEARTBEAT_LED_COUNT = 300;
+enum HeartbeatRenderMode : uint8_t {
+    HEARTBEAT_RENDER_GAMEPLAY = 0,
+    HEARTBEAT_RENDER_SEGMENT_MAP,
+    HEARTBEAT_RENDER_ZONE_MAP
+};
+
+constexpr HeartbeatRenderMode HEARTBEAT_RENDER_MODE = HEARTBEAT_RENDER_GAMEPLAY;
+constexpr uint16_t HEARTBEAT_ACTIVE_LED_COUNT = 300;
+constexpr uint32_t HEARTBEAT_MAX_CURRENT_MA = 3000;
+constexpr uint32_t HEARTBEAT_FULL_WHITE_MA_PER_LED = 60;
+constexpr uint8_t HEARTBEAT_BRIGHTNESS = static_cast<uint8_t>((255u * HEARTBEAT_MAX_CURRENT_MA) /
+                                                              (HEARTBEAT_ACTIVE_LED_COUNT * HEARTBEAT_FULL_WHITE_MA_PER_LED));
+constexpr uint32_t HEARTBEAT_INTERVAL_MS = 900;
 constexpr bool HEARTBEAT_IS_WS2812 = true;
+constexpr uint32_t HEARTBEAT_ATTRACT_INTERVAL_MS = 120;
+constexpr uint32_t HEARTBEAT_SERVE_INTERVAL_MS = 90;
+constexpr uint32_t HEARTBEAT_BONUS_INTERVAL_MS = 70;
+constexpr uint32_t HEARTBEAT_GAME_OVER_INTERVAL_MS = 220;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
 constexpr uint32_t MATRIX_INIT_RETRY_MS = 1000;
-constexpr uint32_t MATRIX_LAMP_KEEPALIVE_MS = 250;
+constexpr uint32_t MATRIX_LAMP_KEEPALIVE_MS = 1000;
+constexpr uint32_t MATRIX_SWITCH_READ_INTERVAL_MS = 60;
 constexpr bool MATRIX_TRACE_ENABLED = false;
 constexpr uint32_t MATRIX_TRACE_WINDOW_MS = 15000;
 constexpr uint32_t MATRIX_SWITCH_LOG_DEBOUNCE_MS = 250;
@@ -47,11 +65,6 @@ constexpr bool MATRIX_SWITCH_SOLENOIDS_ENABLED = true;
 constexpr uint8_t S20_OUTHOLE_SWITCH_ROW = 0;
 constexpr uint8_t S20_OUTHOLE_SWITCH_COL = 0;
 constexpr uint32_t S20_OUTHOLE_RETRIGGER_COOLDOWN_MS = 50;
-// Temporary S2 safety limiter: prevent outhole retrigger loops while eject force is weak.
-constexpr uint32_t S2_RETRIGGER_COOLDOWN_MS = 1500;
-constexpr uint32_t S2_WINDOW_MS = 10000;
-constexpr uint8_t S2_MAX_FIRES_PER_WINDOW = 3;
-constexpr uint8_t S2_MAX_FIRES_PER_BALL = 5;
 // Real gameplay: no more than 2-3 switches can close simultaneously (ball hits multiple targets).
 // Scan transients appear as 5-28 edges per poll. Threshold of 4 passes genuine multi-switch
 // events while blocking all observed scan-induced bursts.
@@ -62,12 +75,178 @@ constexpr UBaseType_t CONTROL_TASK_PRIORITY = 3;
 constexpr UBaseType_t AUDIO_TASK_PRIORITY = 2;
 constexpr uint32_t CONTROL_TASK_STACK_BYTES = 8192;
 constexpr uint32_t AUDIO_TASK_STACK_BYTES = 6144;
-constexpr uint8_t AUDIO_QUEUE_LENGTH = 16;
+constexpr uint8_t AUDIO_QUEUE_LENGTH = 48;
 
 struct AudioToneEvent {
     uint16_t frequencyHz;
     uint16_t durationMs;
+    uint16_t delayBeforeMs;
 };
+
+struct HeartbeatSegmentRange {
+    uint16_t startIndex;
+    uint16_t endIndexExclusive;
+};
+
+enum HeartbeatZoneId : uint8_t {
+    HEARTBEAT_ZONE_START_MARKER = 0,
+    HEARTBEAT_ZONE_SCORE_PANEL,
+    HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE,
+    HEARTBEAT_ZONE_TITLE_BANNER,
+    HEARTBEAT_ZONE_LEFT_MOON_EDGE,
+    HEARTBEAT_ZONE_BOTTOM_STAGE,
+    HEARTBEAT_ZONE_LOWER_LEFT_TRANSITION,
+    HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN,
+    HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL,
+    HEARTBEAT_ZONE_PERFORMER_ROW,
+    HEARTBEAT_ZONE_CENTER_SPLIT,
+    HEARTBEAT_ZONE_CAPTAIN_RING,
+    HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR
+};
+
+struct HeartbeatZoneDefinition {
+    HeartbeatZoneId id;
+    uint8_t segmentIds[3];
+    uint8_t segmentCount;
+};
+
+struct HeartbeatRgb {
+    uint8_t red;
+    uint8_t green;
+    uint8_t blue;
+};
+
+struct HeartbeatSwitchZoneMap {
+    uint8_t row;
+    uint8_t col;
+    HeartbeatZoneId zoneId;
+};
+
+struct HeartbeatZonePulse {
+    bool active;
+    HeartbeatZoneId zoneId;
+    uint32_t color;
+    uint32_t expiresAtMs;
+};
+
+struct HeartbeatPulseProfile {
+    HeartbeatZoneId zoneId;
+    HeartbeatRgb color;
+    uint32_t durationMs;
+};
+
+struct HeartbeatScoreAccent {
+    bool active;
+    uint8_t tier;
+    uint32_t expiresAtMs;
+};
+
+enum HeartbeatEventChoreographyId : uint8_t {
+    HEARTBEAT_EVENT_NONE = 0,
+    HEARTBEAT_EVENT_LANE_SET_COMPLETE,
+    HEARTBEAT_EVENT_BONUS_X3
+};
+
+struct HeartbeatEventChoreography {
+    bool active;
+    HeartbeatEventChoreographyId id;
+    uint32_t startedAtMs;
+    uint32_t expiresAtMs;
+};
+
+constexpr HeartbeatSegmentRange HEARTBEAT_SEGMENT_RANGES[] = {
+    {0, 11},    // Seg 0: LEDs 1-11
+    {11, 22},   // Seg 1: LEDs 12-22, outside edge bottom 2
+    {22, 52},   // Seg 2: LEDs 23-52, outside edge right side
+    {52, 84},   // Seg 3: LEDs 53-84, outside edge top
+    {84, 114},  // Seg 4: LEDs 85-114, outside edge left side
+    {114, 137}, // Seg 5: LEDs 115-137, outside edge bottom 1
+    {137, 146}, // Seg 6: LEDs 138-146
+    {146, 168}, // Seg 7: LEDs 147-168
+    {168, 194}, // Seg 8: LEDs 169-194
+    {194, 212}, // Seg 9: LEDs 195-212
+    {212, 231}, // Seg 10: LEDs 213-231
+    {231, 245}, // Seg 11: LEDs 232-245
+    {245, 264}, // Seg 12: LEDs 246-264
+    {264, 272}, // Seg 13: LEDs 265-272
+    {272, 300}  // Seg 14: LEDs 273-300
+};
+
+constexpr HeartbeatZoneDefinition HEARTBEAT_ZONE_DEFINITIONS[] = {
+    {HEARTBEAT_ZONE_START_MARKER, {0, 0, 0}, 1},                 // Seg 0: start notch
+    {HEARTBEAT_ZONE_SCORE_PANEL, {1, 0, 0}, 1},                  // Seg 1: players / score side
+    {HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE, {2, 0, 0}, 1},          // Seg 2: right outer creature edge
+    {HEARTBEAT_ZONE_TITLE_BANNER, {3, 0, 0}, 1},                 // Seg 3: title / top banner
+    {HEARTBEAT_ZONE_LEFT_MOON_EDGE, {4, 0, 0}, 1},               // Seg 4: left outer moon side
+    {HEARTBEAT_ZONE_BOTTOM_STAGE, {5, 0, 0}, 1},                 // Seg 5: lower platform / stage
+    {HEARTBEAT_ZONE_LOWER_LEFT_TRANSITION, {6, 7, 0}, 2},        // Seg 6-7: lower-left transition / diagonal
+    {HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN, {8, 0, 0}, 1},        // Seg 8: right interior column
+    {HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL, {9, 0, 0}, 1},       // Seg 9: organ / rocket trail region
+    {HEARTBEAT_ZONE_PERFORMER_ROW, {11, 0, 0}, 1},               // Seg 11: performer / crowd row
+    {HEARTBEAT_ZONE_CENTER_SPLIT, {12, 0, 0}, 1},                // Seg 12: center split / start column
+    {HEARTBEAT_ZONE_CAPTAIN_RING, {13, 0, 0}, 1},                // Seg 13: captain / ring accent
+    {HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR, {10, 14, 0}, 2}    // Seg 10 + 14: rabbit / left upper interior
+};
+
+constexpr HeartbeatZoneId HEARTBEAT_ATTRACT_SEQUENCE[] = {
+    HEARTBEAT_ZONE_TITLE_BANNER,
+    HEARTBEAT_ZONE_CAPTAIN_RING,
+    HEARTBEAT_ZONE_PERFORMER_ROW,
+    HEARTBEAT_ZONE_SCORE_PANEL,
+    HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE,
+    HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL,
+    HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR,
+    HEARTBEAT_ZONE_LEFT_MOON_EDGE
+};
+
+constexpr HeartbeatSwitchZoneMap HEARTBEAT_SWITCH_ZONE_MAP[] = {
+    {0, 2, HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE},
+    {0, 3, HEARTBEAT_ZONE_SCORE_PANEL},
+    {1, 0, HEARTBEAT_ZONE_START_MARKER},
+    {1, 2, HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN},
+    {1, 3, HEARTBEAT_ZONE_BOTTOM_STAGE},
+    {2, 0, HEARTBEAT_ZONE_LEFT_MOON_EDGE},
+    {2, 1, HEARTBEAT_ZONE_BOTTOM_STAGE},
+    {2, 2, HEARTBEAT_ZONE_CENTER_SPLIT},
+    {2, 3, HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR},
+    {3, 0, HEARTBEAT_ZONE_TITLE_BANNER},
+    {3, 1, HEARTBEAT_ZONE_BOTTOM_STAGE},
+    {3, 2, HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL},
+    {3, 3, HEARTBEAT_ZONE_PERFORMER_ROW},
+    {4, 0, HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE},
+    {4, 2, HEARTBEAT_ZONE_CAPTAIN_RING},
+    {4, 3, HEARTBEAT_ZONE_BOTTOM_STAGE},
+    {5, 0, HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR},
+    {5, 2, HEARTBEAT_ZONE_CENTER_SPLIT},
+    {5, 3, HEARTBEAT_ZONE_PERFORMER_ROW}
+};
+
+constexpr HeartbeatRgb HEARTBEAT_INCANDESCENT_GI_RGB = {255, 180, 110};
+constexpr HeartbeatRgb HEARTBEAT_INCANDESCENT_PILOT_RGB = {255, 214, 170};
+constexpr HeartbeatRgb HEARTBEAT_WARM_FLASH_RGB = {255, 232, 190};
+constexpr HeartbeatRgb HEARTBEAT_LANE_FLASH_RGB = {255, 222, 150};
+constexpr HeartbeatRgb HEARTBEAT_TARGET_FLASH_RGB = {255, 152, 72};
+constexpr HeartbeatRgb HEARTBEAT_POP_FLASH_RGB = {255, 132, 72};
+constexpr HeartbeatRgb HEARTBEAT_SPINNER_FLASH_RGB = {255, 198, 132};
+constexpr HeartbeatRgb HEARTBEAT_RETURN_FLASH_RGB = {255, 214, 154};
+constexpr HeartbeatRgb HEARTBEAT_MILESTONE_FLASH_RGB = {255, 236, 180};
+constexpr HeartbeatRgb HEARTBEAT_SCORE_GLINT_RGB = {255, 238, 200};
+constexpr HeartbeatRgb HEARTBEAT_SCORE_HOT_RGB = {255, 196, 120};
+constexpr HeartbeatRgb HEARTBEAT_EVENT_SWEEP_RGB = {255, 232, 176};
+constexpr HeartbeatRgb HEARTBEAT_EVENT_HOT_RGB = {255, 180, 90};
+constexpr uint8_t HEARTBEAT_ZONE_BACKGROUND_SCALE = 34;
+constexpr uint8_t HEARTBEAT_ZONE_NEIGHBOR_SCALE = 132;
+constexpr uint8_t HEARTBEAT_ZONE_ACCENT_SCALE = 188;
+constexpr uint32_t HEARTBEAT_ZONE_PULSE_MS = 450;
+constexpr uint32_t HEARTBEAT_SHORT_PULSE_MS = 180;
+constexpr uint32_t HEARTBEAT_MEDIUM_PULSE_MS = 260;
+constexpr uint32_t HEARTBEAT_LONG_PULSE_MS = 420;
+constexpr uint32_t HEARTBEAT_MILESTONE_PULSE_MS = 720;
+constexpr uint32_t HEARTBEAT_SCORE_GLINT_MS = 180;
+constexpr uint32_t HEARTBEAT_SCORE_HOT_MS = 260;
+constexpr uint32_t HEARTBEAT_SCORE_JACKPOT_MS = 340;
+constexpr uint32_t HEARTBEAT_EVENT_STEP_MS = 140;
+constexpr uint32_t HEARTBEAT_EVENT_TRAIL_MS = 320;
 
 enum CaptainGameMode : uint8_t {
     GAME_MODE_ATTRACT = 0,
@@ -93,11 +272,24 @@ struct CaptainGameplayState {
     bool target3Complete = false;
     bool samePlayerLit = false;
     uint32_t lastBonusStepMs = 0;
+    uint32_t serveBallAtMs = 0;
 };
 
-constexpr uint32_t BONUS_COUNTDOWN_STEP_MS = 200;
+constexpr uint32_t BONUS_COUNTDOWN_STEP_MS = 350;
 constexpr uint16_t GAMEPLAY_BONUS_START = 1000;
 constexpr uint16_t GAMEPLAY_BONUS_MAX = 10000;
+constexpr uint16_t GAMEPLAY_SCORE_CHIME_BASE_HZ = 400;
+constexpr uint16_t GAMEPLAY_SCORE_CHIME_100_ACCENT_HZ = 620;
+constexpr uint16_t GAMEPLAY_SCORE_CHIME_1000_ACCENT_HZ = 880;
+constexpr uint16_t GAMEPLAY_SCORE_CHIME_BASE_MS = 70;
+constexpr uint16_t GAMEPLAY_SCORE_CHIME_ACCENT_MS = 30;
+constexpr uint16_t GAMEPLAY_SCORE_CHIME_GAP_MS = 50;
+constexpr uint16_t BUMPER_TONE_DELAY_MS = 18;
+constexpr uint16_t SLINGSHOT_TONE_DELAY_MS = 24;
+constexpr uint16_t GAME_START_TONE_GAP_MS = 140;
+constexpr uint32_t GAME_START_SERVE_DELAY_MS = 4100;
+constexpr uint32_t GAMEPLAY_SWITCH_RETRIGGER_MS = 90;
+constexpr uint32_t FAST_MECH_SWITCH_RETRIGGER_MS = 35;
 
 uint32_t displayScore = 0;
 uint32_t lastDisplayedScore = UINT32_MAX;
@@ -122,10 +314,14 @@ uint32_t i2sWriteErrors = 0;
 uint32_t i2sBytesWrittenTotal = 0;
 uint8_t audioBclkPinEffective = CAPTAIN_AUDIO_BCLK_PIN;
 uint8_t audioLrckPinEffective = CAPTAIN_AUDIO_LRCK_PIN;
+uint32_t lastAudioDiagnosticMs = 0;
+uint32_t lastAudioGpioToggleMs = 0;
+bool audioGpioOnlyState = false;
 bool heartbeatEnabled = false;
 bool heartbeatState = false;
 uint32_t lastHeartbeatToggleMs = 0;
-Adafruit_NeoPixel heartbeatPixel(1, HEARTBEAT_PIN, NEO_GRB + NEO_KHZ800);
+uint16_t heartbeatPatternIndex = 0;
+Adafruit_NeoPixel heartbeatPixel(HEARTBEAT_LED_COUNT, HEARTBEAT_PIN, NEO_GRB + NEO_KHZ800);
 bool otaReady = false;
 bool otaInProgress = false;
 uint32_t lastOtaVisualToggleMs = 0;
@@ -136,6 +332,7 @@ bool matrixDeviceReady = false;
 uint32_t lastMatrixGoodTransactionMs = 0;
 uint32_t lastMatrixInitAttemptMs = 0;
 uint32_t lastMatrixDiagPollMs = 0;
+uint32_t lastMatrixSwitchReadMs = 0;
 bool matrixLinkFaulted = false;
 uint32_t matrixWriteOkCount = 0;
 uint32_t matrixWriteFailCount = 0;
@@ -162,39 +359,106 @@ uint32_t matrixTraceSeq = 0;
 uint32_t lastMatrixSwitchEdgeLogMs = 0;
 uint32_t s20OutholeLastRiseMs = 0;
 uint32_t s20OutholeSuppressedSticky = 0;
-uint32_t s2SuppressedCooldown = 0;
-uint32_t s2SuppressedWindow = 0;
-uint32_t s2SuppressedBall = 0;
+uint32_t lastGameplaySwitchHitMs[CAPTAIN_SWITCH_ROWS * CAPTAIN_SWITCH_COLS] = {};
 bool currentSW1Mode = false;  // false = Easy, true = Hard
 bool currentSW2Mode = false;  // false = Game, true = Test
 uint16_t matrixSwitchLoggedThisWindow = 0;
 uint16_t matrixSwitchEdgesThisWindow = 0;
 uint32_t matrixSwitchLogWindowStartMs = 0;
-uint32_t s2WindowStartMs = 0;
-uint32_t s2LastFireMs = 0;
-uint8_t s2FiresInWindow = 0;
-uint8_t s2FiresThisBall = 0;
+HeartbeatZonePulse heartbeatZonePulse = {false, HEARTBEAT_ZONE_START_MARKER, 0, 0};
+HeartbeatScoreAccent heartbeatScoreAccent = {false, 0, 0};
+HeartbeatEventChoreography heartbeatEventChoreography = {false, HEARTBEAT_EVENT_NONE, 0, 0};
 CaptainGameplayState gameplayState = {};
 QueueHandle_t audioToneQueue = nullptr;
 TaskHandle_t controlTaskHandle = nullptr;
 TaskHandle_t audioTaskHandle = nullptr;
 
+void renderHeartbeatPattern();
 void resetGameplayStateForNewBall();
-void startNewGame();
+void startNewGame(uint32_t nowMs);
 void startBonusCountdown(uint32_t nowMs);
 void updateGameplayState(uint32_t nowMs);
 void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs);
-bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
+bool queueToneDelayed(uint16_t frequencyHz, uint16_t durationMs, uint16_t delayBeforeMs) {
     if (!i2sAudioReady || CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE || audioToneQueue == nullptr) {
         return false;
     }
 
-    AudioToneEvent event = {frequencyHz, durationMs};
+    AudioToneEvent event = {frequencyHz, durationMs, delayBeforeMs};
     if (xQueueSend(audioToneQueue, &event
         , 0) == pdPASS) {
         return true;
     }
     return false;
+}
+
+bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
+    return queueToneDelayed(frequencyHz, durationMs, 0);
+}
+
+void queueBumperTone() {
+    queueToneDelayed(700, 100, BUMPER_TONE_DELAY_MS);
+}
+
+void queueSlingshotTone() {
+    queueToneDelayed(700, 60, SLINGSHOT_TONE_DELAY_MS);
+    queueTone(850, 50);
+}
+
+void queueTargetTone() {
+    queueTone(1300, 80);
+}
+
+void queueRolloverTone() {
+    queueTone(1300, 60);
+}
+
+void queueDrainTone() {
+    queueTone(1200, 80);
+    queueTone(1000, 80);
+    queueTone(800, 80);
+    queueTone(600, 80);
+    queueTone(400, 80);
+}
+
+void queueBonusCountTone() {
+    queueTone(1000, 50);
+}
+
+void queueScoringTone(uint32_t points) {
+    const uint16_t pulseCount = static_cast<uint16_t>(max<uint32_t>(1, points / 100));
+    const uint16_t accentHz = points >= 1000 ? GAMEPLAY_SCORE_CHIME_1000_ACCENT_HZ
+                                             : GAMEPLAY_SCORE_CHIME_100_ACCENT_HZ;
+
+    for (uint16_t pulse = 0; pulse < pulseCount; pulse++) {
+        queueTone(GAMEPLAY_SCORE_CHIME_BASE_HZ, GAMEPLAY_SCORE_CHIME_BASE_MS);
+        queueTone(accentHz, GAMEPLAY_SCORE_CHIME_ACCENT_MS);
+        if (pulse + 1u < pulseCount) {
+            queueToneDelayed(GAMEPLAY_SCORE_CHIME_BASE_HZ, 0, GAMEPLAY_SCORE_CHIME_GAP_MS);
+        }
+    }
+}
+
+void queueGameStartFanfare() {
+    const uint16_t startPatternHz[] = {392, 523, 659, 784, 880, 784, 659, 523};
+    constexpr uint16_t startToneMs = 360;
+
+    queueTone(startPatternHz[0], startToneMs);
+    for (size_t index = 1; index < (sizeof(startPatternHz) / sizeof(startPatternHz[0])); index++) {
+        queueToneDelayed(startPatternHz[index], startToneMs, GAME_START_TONE_GAP_MS);
+    }
+}
+
+uint32_t gameplaySwitchRetriggerMs(uint8_t row, uint8_t col) {
+    if ((row == 0 && col == 2) || (row == 3 && col == 2)) {
+        return 0;
+    }
+
+    if ((row == 1 && col == 3) || (row == 2 && col == 1) || (row == 3 && col == 1) || (row == 4 && col == 3)) {
+        return FAST_MECH_SWITCH_RETRIGGER_MS;
+    }
+
+    return GAMEPLAY_SWITCH_RETRIGGER_MS;
 }
 
 void updateHeadboxLamps(uint16_t pattern);
@@ -319,7 +583,7 @@ void logMatrixLinkSummary(uint32_t now) {
     }
 
     lastMatrixLinkSummaryMs = now;
-    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu raw0=0x%02X raw1=0x%02X raw2=0x%02X raw3=0x%02X sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu sup_le=%lu s20_sticky=%lu s2_fire=%u s2_cd=%lu s2_win=%lu s2_ball=%lu\n",
+    Serial.printf("Matrix link: ready=%u fault=%u wr_ok=%lu wr_fail=%lu rd_ok=%lu rd_fail=%lu diag_warn=%lu raw0=0x%02X raw1=0x%02X raw2=0x%02X raw3=0x%02X sw0=0x%02X sw1=0x%02X sw2=0x%02X sw3=0x%02X sw_edges=%u sw_log=%u sup_db=%lu sup_rate=%lu sup_le=%lu s20_sticky=%lu\n",
                   matrixDeviceReady ? 1u : 0u,
                   matrixLinkFaulted ? 1u : 0u,
                   static_cast<unsigned long>(matrixWriteOkCount),
@@ -340,11 +604,7 @@ void logMatrixLinkSummary(uint32_t now) {
                   static_cast<unsigned long>(matrixSwitchLogSuppressedDebounce),
                   static_cast<unsigned long>(matrixSwitchLogSuppressedRate),
                   static_cast<unsigned long>(matrixSwitchSuppressedLampEcho),
-                  static_cast<unsigned long>(s20OutholeSuppressedSticky),
-                  static_cast<unsigned>(s2FiresThisBall),
-                  static_cast<unsigned long>(s2SuppressedCooldown),
-                  static_cast<unsigned long>(s2SuppressedWindow),
-                  static_cast<unsigned long>(s2SuppressedBall));
+                  static_cast<unsigned long>(s20OutholeSuppressedSticky));
 
     if (matrixSwitchSuppressedBurst > 0) {
         Serial.printf("Matrix switch burst filter: dropped=%lu (max rising edges per poll=%u)\n",
@@ -359,9 +619,6 @@ void logMatrixLinkSummary(uint32_t now) {
     matrixSwitchSuppressedBurst = 0;
     matrixSwitchSuppressedLampEcho = 0;
     s20OutholeSuppressedSticky = 0;
-    s2SuppressedCooldown = 0;
-    s2SuppressedWindow = 0;
-    s2SuppressedBall = 0;
     matrixSwitchLogWindowStartMs = now;
 }
 
@@ -419,6 +676,506 @@ void initWifiAndOta() {
     Serial.printf("OTA ready: host=%s ip=%s\n", CAPTAIN_OTA_HOSTNAME, WiFi.localIP().toString().c_str());
 }
 
+uint32_t heartbeatIntervalForMode() {
+    switch (gameplayState.mode) {
+        case GAME_MODE_SERVE_BALL:
+        case GAME_MODE_BALL_IN_PLAY:
+            return HEARTBEAT_SERVE_INTERVAL_MS;
+        case GAME_MODE_BONUS_COUNTDOWN:
+            return HEARTBEAT_BONUS_INTERVAL_MS;
+        case GAME_MODE_GAME_OVER:
+            return HEARTBEAT_GAME_OVER_INTERVAL_MS;
+        case GAME_MODE_ATTRACT:
+        default:
+            return HEARTBEAT_ATTRACT_INTERVAL_MS;
+    }
+}
+
+const HeartbeatZoneDefinition* heartbeatZoneDefinitionForId(HeartbeatZoneId zoneId) {
+    for (const HeartbeatZoneDefinition& zone : HEARTBEAT_ZONE_DEFINITIONS) {
+        if (zone.id == zoneId) {
+            return &zone;
+        }
+    }
+    return nullptr;
+}
+
+HeartbeatRgb heartbeatRgbForZone(HeartbeatZoneId zoneId) {
+    switch (zoneId) {
+        case HEARTBEAT_ZONE_START_MARKER:
+            return {255, 235, 190};
+        case HEARTBEAT_ZONE_SCORE_PANEL:
+            return {255, 205, 145};
+        case HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE:
+            return {255, 120, 70};
+        case HEARTBEAT_ZONE_TITLE_BANNER:
+            return {255, 180, 70};
+        case HEARTBEAT_ZONE_LEFT_MOON_EDGE:
+            return {255, 200, 140};
+        case HEARTBEAT_ZONE_BOTTOM_STAGE:
+            return {255, 150, 80};
+        case HEARTBEAT_ZONE_LOWER_LEFT_TRANSITION:
+            return {255, 185, 100};
+        case HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN:
+            return {255, 165, 105};
+        case HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL:
+            return {255, 128, 60};
+        case HEARTBEAT_ZONE_PERFORMER_ROW:
+            return {255, 210, 120};
+        case HEARTBEAT_ZONE_CENTER_SPLIT:
+            return {255, 225, 175};
+        case HEARTBEAT_ZONE_CAPTAIN_RING:
+            return {255, 190, 95};
+        case HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR:
+            return {255, 170, 125};
+        default:
+            return {255, 220, 170};
+    }
+}
+
+HeartbeatRgb scaleHeartbeatRgb(HeartbeatRgb color, uint8_t scale) {
+    HeartbeatRgb scaled = {};
+    scaled.red = static_cast<uint8_t>((static_cast<uint16_t>(color.red) * scale) / 255u);
+    scaled.green = static_cast<uint8_t>((static_cast<uint16_t>(color.green) * scale) / 255u);
+    scaled.blue = static_cast<uint8_t>((static_cast<uint16_t>(color.blue) * scale) / 255u);
+    return scaled;
+}
+
+uint32_t heartbeatColorFromRgb(HeartbeatRgb color) {
+    return heartbeatPixel.Color(color.red, color.green, color.blue);
+}
+
+uint32_t heartbeatColorForZone(HeartbeatZoneId zoneId, uint8_t scale = 255) {
+    return heartbeatColorFromRgb(scaleHeartbeatRgb(heartbeatRgbForZone(zoneId), scale));
+}
+
+uint32_t heartbeatColorForIndex(uint16_t colorIndex) {
+    return heartbeatColorForZone(static_cast<HeartbeatZoneId>(colorIndex));
+}
+
+void fillHeartbeatSegment(uint8_t segmentId, uint16_t activeCount, uint32_t segmentColor) {
+    if (segmentId >= (sizeof(HEARTBEAT_SEGMENT_RANGES) / sizeof(HEARTBEAT_SEGMENT_RANGES[0]))) {
+        return;
+    }
+
+    const uint16_t startLed = min<uint16_t>(HEARTBEAT_SEGMENT_RANGES[segmentId].startIndex, activeCount);
+    const uint16_t endLed = min<uint16_t>(HEARTBEAT_SEGMENT_RANGES[segmentId].endIndexExclusive, activeCount);
+    if (startLed >= endLed) {
+        return;
+    }
+
+    heartbeatPixel.setPixelColor(startLed, heartbeatColorFromRgb(HEARTBEAT_INCANDESCENT_PILOT_RGB));
+    for (uint16_t pixelIndex = startLed + 1u; pixelIndex < endLed; pixelIndex++) {
+        heartbeatPixel.setPixelColor(pixelIndex, segmentColor);
+    }
+}
+
+void fillHeartbeatZone(HeartbeatZoneId zoneId, uint16_t activeCount, uint32_t color) {
+    const HeartbeatZoneDefinition* zone = heartbeatZoneDefinitionForId(zoneId);
+    if (zone == nullptr) {
+        return;
+    }
+
+    for (uint8_t segmentOffset = 0; segmentOffset < zone->segmentCount; segmentOffset++) {
+        fillHeartbeatSegment(zone->segmentIds[segmentOffset], activeCount, color);
+    }
+}
+
+void fillHeartbeatAllZones(uint16_t activeCount, uint8_t scale) {
+    const uint32_t giColor = heartbeatColorFromRgb(scaleHeartbeatRgb(HEARTBEAT_INCANDESCENT_GI_RGB, scale));
+    for (const HeartbeatZoneDefinition& zone : HEARTBEAT_ZONE_DEFINITIONS) {
+        fillHeartbeatZone(zone.id, activeCount, giColor);
+    }
+}
+
+HeartbeatZoneId heartbeatZoneForSwitch(uint8_t row, uint8_t col) {
+    for (const HeartbeatSwitchZoneMap& mapping : HEARTBEAT_SWITCH_ZONE_MAP) {
+        if (mapping.row == row && mapping.col == col) {
+            return mapping.zoneId;
+        }
+    }
+    return HEARTBEAT_ZONE_CENTER_SPLIT;
+}
+
+void triggerHeartbeatZonePulse(HeartbeatZoneId zoneId, uint32_t color, uint32_t durationMs) {
+    heartbeatZonePulse.active = true;
+    heartbeatZonePulse.zoneId = zoneId;
+    heartbeatZonePulse.color = color;
+    heartbeatZonePulse.expiresAtMs = millis() + durationMs;
+
+    if (heartbeatEnabled && HEARTBEAT_IS_WS2812 && HEARTBEAT_RENDER_MODE == HEARTBEAT_RENDER_GAMEPLAY) {
+        renderHeartbeatPattern();
+    }
+}
+
+void triggerHeartbeatPulseProfile(const HeartbeatPulseProfile& profile) {
+    triggerHeartbeatZonePulse(profile.zoneId, heartbeatColorFromRgb(profile.color), profile.durationMs);
+}
+
+void triggerHeartbeatScoreAccent(uint32_t points) {
+    heartbeatScoreAccent.active = true;
+    if (points >= 1000) {
+        heartbeatScoreAccent.tier = 2;
+        heartbeatScoreAccent.expiresAtMs = millis() + HEARTBEAT_SCORE_JACKPOT_MS;
+    } else if (points >= 500) {
+        heartbeatScoreAccent.tier = 1;
+        heartbeatScoreAccent.expiresAtMs = millis() + HEARTBEAT_SCORE_HOT_MS;
+    } else {
+        heartbeatScoreAccent.tier = 0;
+        heartbeatScoreAccent.expiresAtMs = millis() + HEARTBEAT_SCORE_GLINT_MS;
+    }
+
+    if (heartbeatEnabled && HEARTBEAT_IS_WS2812 && HEARTBEAT_RENDER_MODE == HEARTBEAT_RENDER_GAMEPLAY) {
+        renderHeartbeatPattern();
+    }
+}
+
+void triggerHeartbeatEventChoreography(HeartbeatEventChoreographyId id, uint32_t durationMs) {
+    heartbeatEventChoreography.active = true;
+    heartbeatEventChoreography.id = id;
+    heartbeatEventChoreography.startedAtMs = millis();
+    heartbeatEventChoreography.expiresAtMs = heartbeatEventChoreography.startedAtMs + durationMs;
+
+    if (heartbeatEnabled && HEARTBEAT_IS_WS2812 && HEARTBEAT_RENDER_MODE == HEARTBEAT_RENDER_GAMEPLAY) {
+        renderHeartbeatPattern();
+    }
+}
+
+HeartbeatPulseProfile heartbeatPulseProfileForSwitch(uint8_t row, uint8_t col) {
+    switch (row) {
+        case 0:
+            if (col == 2) {
+                return {HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE, HEARTBEAT_SPINNER_FLASH_RGB, HEARTBEAT_SHORT_PULSE_MS};
+            }
+            if (col == 3) {
+                return {HEARTBEAT_ZONE_SCORE_PANEL, HEARTBEAT_RETURN_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            break;
+        case 1:
+            if (col == 0) {
+                return {HEARTBEAT_ZONE_START_MARKER, HEARTBEAT_LANE_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 2) {
+                return {HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN, HEARTBEAT_TARGET_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 3) {
+                return {HEARTBEAT_ZONE_BOTTOM_STAGE, HEARTBEAT_POP_FLASH_RGB, HEARTBEAT_MEDIUM_PULSE_MS};
+            }
+            break;
+        case 2:
+            if (col == 0) {
+                return {HEARTBEAT_ZONE_LEFT_MOON_EDGE, HEARTBEAT_LANE_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 1) {
+                return {HEARTBEAT_ZONE_BOTTOM_STAGE, HEARTBEAT_POP_FLASH_RGB, HEARTBEAT_MEDIUM_PULSE_MS};
+            }
+            if (col == 2) {
+                return {HEARTBEAT_ZONE_CENTER_SPLIT, HEARTBEAT_SPINNER_FLASH_RGB, HEARTBEAT_SHORT_PULSE_MS};
+            }
+            if (col == 3) {
+                return {HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR, HEARTBEAT_RETURN_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            break;
+        case 3:
+            if (col == 0) {
+                return {HEARTBEAT_ZONE_TITLE_BANNER, HEARTBEAT_LANE_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 1) {
+                return {HEARTBEAT_ZONE_BOTTOM_STAGE, HEARTBEAT_POP_FLASH_RGB, HEARTBEAT_MEDIUM_PULSE_MS};
+            }
+            if (col == 2) {
+                return {HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL, HEARTBEAT_SPINNER_FLASH_RGB, HEARTBEAT_SHORT_PULSE_MS};
+            }
+            if (col == 3) {
+                return {HEARTBEAT_ZONE_PERFORMER_ROW, HEARTBEAT_RETURN_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            break;
+        case 4:
+            if (col == 0) {
+                return {HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE, HEARTBEAT_LANE_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 2) {
+                return {HEARTBEAT_ZONE_CAPTAIN_RING, HEARTBEAT_TARGET_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 3) {
+                return {HEARTBEAT_ZONE_BOTTOM_STAGE, HEARTBEAT_POP_FLASH_RGB, HEARTBEAT_MEDIUM_PULSE_MS};
+            }
+            break;
+        case 5:
+            if (col == 0) {
+                return {HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR, HEARTBEAT_TARGET_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            if (col == 2) {
+                return {HEARTBEAT_ZONE_CENTER_SPLIT, HEARTBEAT_SPINNER_FLASH_RGB, HEARTBEAT_SHORT_PULSE_MS};
+            }
+            if (col == 3) {
+                return {HEARTBEAT_ZONE_PERFORMER_ROW, HEARTBEAT_RETURN_FLASH_RGB, HEARTBEAT_LONG_PULSE_MS};
+            }
+            break;
+        default:
+            break;
+    }
+
+    return {heartbeatZoneForSwitch(row, col), HEARTBEAT_WARM_FLASH_RGB, HEARTBEAT_ZONE_PULSE_MS};
+}
+
+void applyHeartbeatZonePulse(uint16_t activeCount, uint32_t nowMs) {
+    if (!heartbeatZonePulse.active) {
+        return;
+    }
+    if (nowMs >= heartbeatZonePulse.expiresAtMs) {
+        heartbeatZonePulse.active = false;
+        return;
+    }
+
+    fillHeartbeatZone(heartbeatZonePulse.zoneId, activeCount, heartbeatZonePulse.color);
+}
+
+void applyHeartbeatScoreAccent(uint16_t activeCount, uint32_t nowMs) {
+    if (!heartbeatScoreAccent.active) {
+        return;
+    }
+    if (nowMs >= heartbeatScoreAccent.expiresAtMs) {
+        heartbeatScoreAccent.active = false;
+        return;
+    }
+
+    const bool shimmerOn = (heartbeatPatternIndex % 2u) == 0u;
+    fillHeartbeatZone(HEARTBEAT_ZONE_SCORE_PANEL, activeCount,
+                      heartbeatColorFromRgb(shimmerOn ? HEARTBEAT_SCORE_GLINT_RGB : HEARTBEAT_SCORE_HOT_RGB));
+    fillHeartbeatZone(HEARTBEAT_ZONE_CENTER_SPLIT, activeCount,
+                      heartbeatColorForZone(HEARTBEAT_ZONE_CENTER_SPLIT, shimmerOn ? 255 : HEARTBEAT_ZONE_ACCENT_SCALE));
+
+    if (heartbeatScoreAccent.tier >= 1) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_PERFORMER_ROW, activeCount,
+                          heartbeatColorFromRgb(shimmerOn ? HEARTBEAT_SCORE_HOT_RGB : HEARTBEAT_SCORE_GLINT_RGB));
+    }
+    if (heartbeatScoreAccent.tier >= 2) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_CAPTAIN_RING, activeCount,
+                          heartbeatColorFromRgb(HEARTBEAT_SCORE_HOT_RGB));
+    }
+}
+
+void applyHeartbeatEventChoreography(uint16_t activeCount, uint32_t nowMs) {
+    if (!heartbeatEventChoreography.active) {
+        return;
+    }
+    if (nowMs >= heartbeatEventChoreography.expiresAtMs) {
+        heartbeatEventChoreography.active = false;
+        heartbeatEventChoreography.id = HEARTBEAT_EVENT_NONE;
+        return;
+    }
+
+    static constexpr HeartbeatZoneId laneSetSweep[] = {
+        HEARTBEAT_ZONE_START_MARKER,
+        HEARTBEAT_ZONE_LEFT_MOON_EDGE,
+        HEARTBEAT_ZONE_TITLE_BANNER,
+        HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE,
+        HEARTBEAT_ZONE_SCORE_PANEL
+    };
+
+    static constexpr HeartbeatZoneId bonus3xSweep[] = {
+        HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN,
+        HEARTBEAT_ZONE_CAPTAIN_RING,
+        HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL,
+        HEARTBEAT_ZONE_PERFORMER_ROW,
+        HEARTBEAT_ZONE_SCORE_PANEL
+    };
+
+    const HeartbeatZoneId* sequence = nullptr;
+    uint8_t sequenceCount = 0;
+    switch (heartbeatEventChoreography.id) {
+        case HEARTBEAT_EVENT_LANE_SET_COMPLETE:
+            sequence = laneSetSweep;
+            sequenceCount = static_cast<uint8_t>(sizeof(laneSetSweep) / sizeof(laneSetSweep[0]));
+            break;
+        case HEARTBEAT_EVENT_BONUS_X3:
+            sequence = bonus3xSweep;
+            sequenceCount = static_cast<uint8_t>(sizeof(bonus3xSweep) / sizeof(bonus3xSweep[0]));
+            break;
+        case HEARTBEAT_EVENT_NONE:
+        default:
+            return;
+    }
+
+    const uint32_t elapsedMs = nowMs - heartbeatEventChoreography.startedAtMs;
+    const uint8_t leadIndex = static_cast<uint8_t>((elapsedMs / HEARTBEAT_EVENT_STEP_MS) % sequenceCount);
+    const uint8_t trailIndex = static_cast<uint8_t>((leadIndex + sequenceCount - 1u) % sequenceCount);
+
+    fillHeartbeatZone(sequence[trailIndex], activeCount, heartbeatColorFromRgb(HEARTBEAT_EVENT_SWEEP_RGB));
+    fillHeartbeatZone(sequence[leadIndex], activeCount, heartbeatColorFromRgb(HEARTBEAT_EVENT_HOT_RGB));
+}
+
+void renderHeartbeatAttractZones(uint16_t activeCount) {
+    fillHeartbeatAllZones(activeCount, HEARTBEAT_ZONE_BACKGROUND_SCALE);
+
+    const uint8_t sequenceCount = static_cast<uint8_t>(sizeof(HEARTBEAT_ATTRACT_SEQUENCE) / sizeof(HEARTBEAT_ATTRACT_SEQUENCE[0]));
+    const uint8_t leadIndex = static_cast<uint8_t>(heartbeatPatternIndex % sequenceCount);
+    const uint8_t trailIndex = static_cast<uint8_t>((leadIndex + sequenceCount - 1u) % sequenceCount);
+    const uint8_t mirrorIndex = static_cast<uint8_t>((leadIndex + (sequenceCount / 2u)) % sequenceCount);
+    const bool bannerPulseOn = (heartbeatPatternIndex % 2u) == 0u;
+
+    fillHeartbeatZone(HEARTBEAT_ATTRACT_SEQUENCE[trailIndex], activeCount,
+                      heartbeatColorForZone(HEARTBEAT_ATTRACT_SEQUENCE[trailIndex], HEARTBEAT_ZONE_NEIGHBOR_SCALE));
+    fillHeartbeatZone(HEARTBEAT_ATTRACT_SEQUENCE[mirrorIndex], activeCount,
+                      heartbeatColorForZone(HEARTBEAT_ATTRACT_SEQUENCE[mirrorIndex], HEARTBEAT_ZONE_ACCENT_SCALE));
+    fillHeartbeatZone(HEARTBEAT_ATTRACT_SEQUENCE[leadIndex], activeCount,
+                      heartbeatColorForZone(HEARTBEAT_ATTRACT_SEQUENCE[leadIndex], 255));
+    fillHeartbeatZone(HEARTBEAT_ZONE_TITLE_BANNER, activeCount,
+                      heartbeatColorForZone(HEARTBEAT_ZONE_TITLE_BANNER,
+                                            bannerPulseOn ? 255 : HEARTBEAT_ZONE_NEIGHBOR_SCALE));
+    fillHeartbeatZone(HEARTBEAT_ZONE_SCORE_PANEL, activeCount,
+                      heartbeatColorForZone(HEARTBEAT_ZONE_SCORE_PANEL,
+                                            bannerPulseOn ? HEARTBEAT_ZONE_NEIGHBOR_SCALE : HEARTBEAT_ZONE_ACCENT_SCALE));
+}
+
+void renderHeartbeatServeBallZones(uint16_t activeCount) {
+    fillHeartbeatAllZones(activeCount, HEARTBEAT_ZONE_BACKGROUND_SCALE);
+
+    const uint8_t pulseScale = ((heartbeatPatternIndex % 2u) == 0u) ? 255u : HEARTBEAT_ZONE_ACCENT_SCALE;
+    fillHeartbeatZone(HEARTBEAT_ZONE_START_MARKER, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_START_MARKER, pulseScale));
+    fillHeartbeatZone(HEARTBEAT_ZONE_CENTER_SPLIT, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_CENTER_SPLIT, pulseScale));
+    fillHeartbeatZone(HEARTBEAT_ZONE_BOTTOM_STAGE, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_BOTTOM_STAGE, HEARTBEAT_ZONE_NEIGHBOR_SCALE));
+    applyHeartbeatScoreAccent(activeCount, millis());
+    applyHeartbeatEventChoreography(activeCount, millis());
+}
+
+void renderHeartbeatBallInPlayZones(uint16_t activeCount, uint32_t nowMs) {
+    fillHeartbeatAllZones(activeCount, HEARTBEAT_ZONE_BACKGROUND_SCALE);
+
+    if (gameplayState.laneAComplete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_START_MARKER, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_START_MARKER, HEARTBEAT_ZONE_ACCENT_SCALE));
+    }
+    if (gameplayState.laneBComplete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_LEFT_MOON_EDGE, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_LEFT_MOON_EDGE, HEARTBEAT_ZONE_ACCENT_SCALE));
+    }
+    if (gameplayState.laneCComplete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_TITLE_BANNER, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_TITLE_BANNER, HEARTBEAT_ZONE_ACCENT_SCALE));
+    }
+    if (gameplayState.laneDComplete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_RIGHT_CREATURE_EDGE, HEARTBEAT_ZONE_ACCENT_SCALE));
+    }
+
+    if (gameplayState.target1Complete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_RIGHT_INTERIOR_COLUMN, 255));
+    }
+    if (gameplayState.target2Complete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_CAPTAIN_RING, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_CAPTAIN_RING, 255));
+    }
+    if (gameplayState.target3Complete) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_RABBIT_AND_LEFT_INTERIOR, 255));
+    }
+
+    if (gameplayState.bonusMultiplier >= 2) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_PERFORMER_ROW, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_PERFORMER_ROW, HEARTBEAT_ZONE_ACCENT_SCALE));
+    }
+    if (gameplayState.bonusMultiplier >= 3) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL, HEARTBEAT_ZONE_ACCENT_SCALE));
+    }
+    if (gameplayState.samePlayerLit) {
+        fillHeartbeatZone(HEARTBEAT_ZONE_SCORE_PANEL, activeCount, heartbeatColorForZone(HEARTBEAT_ZONE_SCORE_PANEL, 255));
+    }
+
+    applyHeartbeatZonePulse(activeCount, nowMs);
+    applyHeartbeatScoreAccent(activeCount, nowMs);
+    applyHeartbeatEventChoreography(activeCount, nowMs);
+}
+
+void renderHeartbeatBonusCountdownZones(uint16_t activeCount) {
+    fillHeartbeatAllZones(activeCount, HEARTBEAT_ZONE_BACKGROUND_SCALE);
+
+    const bool flashOn = (heartbeatPatternIndex % 2u) == 0u;
+    const uint32_t flashColor = flashOn ? heartbeatPixel.Color(255, 120, 0) : heartbeatPixel.Color(32, 8, 0);
+    fillHeartbeatZone(HEARTBEAT_ZONE_SCORE_PANEL, activeCount, flashColor);
+    fillHeartbeatZone(HEARTBEAT_ZONE_PERFORMER_ROW, activeCount, flashColor);
+    fillHeartbeatZone(HEARTBEAT_ZONE_CAPTAIN_RING, activeCount,
+                      flashOn ? heartbeatPixel.Color(255, 220, 120) : heartbeatPixel.Color(28, 10, 0));
+    applyHeartbeatScoreAccent(activeCount, millis());
+    applyHeartbeatEventChoreography(activeCount, millis());
+}
+
+void renderHeartbeatGameOverZones(uint16_t activeCount) {
+    fillHeartbeatAllZones(activeCount, static_cast<uint8_t>(HEARTBEAT_ZONE_BACKGROUND_SCALE / 2u));
+
+    static constexpr HeartbeatZoneId gameOverSequence[] = {
+        HEARTBEAT_ZONE_TITLE_BANNER,
+        HEARTBEAT_ZONE_CAPTAIN_RING,
+        HEARTBEAT_ZONE_BOTTOM_STAGE,
+        HEARTBEAT_ZONE_SCORE_PANEL
+    };
+
+    const uint8_t sequenceCount = static_cast<uint8_t>(sizeof(gameOverSequence) / sizeof(gameOverSequence[0]));
+    const uint8_t leadIndex = static_cast<uint8_t>(heartbeatPatternIndex % sequenceCount);
+    const uint8_t trailIndex = static_cast<uint8_t>((leadIndex + sequenceCount - 1u) % sequenceCount);
+    const bool flashOn = (heartbeatPatternIndex % 2u) == 0u;
+
+    fillHeartbeatZone(gameOverSequence[trailIndex], activeCount,
+                      flashOn ? heartbeatPixel.Color(120, 12, 0) : heartbeatPixel.Color(48, 6, 0));
+    fillHeartbeatZone(gameOverSequence[leadIndex], activeCount,
+                      flashOn ? heartbeatPixel.Color(255, 24, 0) : heartbeatPixel.Color(140, 10, 0));
+    fillHeartbeatZone(HEARTBEAT_ZONE_CENTER_SPLIT, activeCount,
+                      flashOn ? heartbeatPixel.Color(255, 150, 80) : heartbeatPixel.Color(36, 10, 0));
+}
+
+void renderHeartbeatPattern() {
+    heartbeatPixel.clear();
+
+    const uint16_t activeCount = min<uint16_t>(HEARTBEAT_ACTIVE_LED_COUNT, HEARTBEAT_LED_COUNT);
+    if (activeCount == 0) {
+        heartbeatPixel.show();
+        return;
+    }
+
+    if (HEARTBEAT_RENDER_MODE == HEARTBEAT_RENDER_ZONE_MAP) {
+        const uint16_t zoneCount = static_cast<uint16_t>(sizeof(HEARTBEAT_ZONE_DEFINITIONS) / sizeof(HEARTBEAT_ZONE_DEFINITIONS[0]));
+        const uint16_t zoneIndex = heartbeatPatternIndex % zoneCount;
+        const HeartbeatZoneDefinition& zone = HEARTBEAT_ZONE_DEFINITIONS[zoneIndex];
+        const uint32_t zoneColor = heartbeatColorForIndex(zoneIndex);
+
+        for (uint8_t segmentOffset = 0; segmentOffset < zone.segmentCount; segmentOffset++) {
+            fillHeartbeatSegment(zone.segmentIds[segmentOffset], activeCount, zoneColor);
+        }
+
+        heartbeatPixel.show();
+        return;
+    }
+
+    if (HEARTBEAT_RENDER_MODE == HEARTBEAT_RENDER_SEGMENT_MAP) {
+        const uint16_t segmentCount = static_cast<uint16_t>(sizeof(HEARTBEAT_SEGMENT_RANGES) / sizeof(HEARTBEAT_SEGMENT_RANGES[0]));
+        const uint16_t segmentIndex = heartbeatPatternIndex % segmentCount;
+        fillHeartbeatSegment(static_cast<uint8_t>(segmentIndex), activeCount, heartbeatColorForIndex(segmentIndex));
+
+        heartbeatPixel.show();
+        return;
+    }
+
+    const uint32_t nowMs = millis();
+
+    switch (gameplayState.mode) {
+        case GAME_MODE_BALL_IN_PLAY:
+            renderHeartbeatBallInPlayZones(activeCount, nowMs);
+            heartbeatPixel.show();
+            return;
+        case GAME_MODE_SERVE_BALL:
+            renderHeartbeatServeBallZones(activeCount);
+            heartbeatPixel.show();
+            return;
+        case GAME_MODE_BONUS_COUNTDOWN:
+            renderHeartbeatBonusCountdownZones(activeCount);
+            heartbeatPixel.show();
+            return;
+        case GAME_MODE_GAME_OVER:
+            renderHeartbeatGameOverZones(activeCount);
+            heartbeatPixel.show();
+            return;
+        case GAME_MODE_ATTRACT:
+        default:
+            renderHeartbeatAttractZones(activeCount);
+            heartbeatPixel.show();
+            return;
+    }
+}
+
 void initHeartbeat() {
     const bool conflictsHeadboxShiftRegister =
         (HEARTBEAT_PIN == static_cast<uint8_t>(CAPTAIN_HEADBOX_595_DATA_PIN)) ||
@@ -433,8 +1190,9 @@ void initHeartbeat() {
 
     if (HEARTBEAT_IS_WS2812) {
         heartbeatPixel.begin();
-        heartbeatPixel.setPixelColor(0, heartbeatPixel.Color(0, 0, 0));
-        heartbeatPixel.show();
+        heartbeatPixel.setBrightness(HEARTBEAT_BRIGHTNESS);
+        heartbeatPatternIndex = 0;
+        renderHeartbeatPattern();
     } else {
         pinMode(HEARTBEAT_PIN, OUTPUT);
         digitalWrite(HEARTBEAT_PIN, LOW);
@@ -443,7 +1201,13 @@ void initHeartbeat() {
     heartbeatEnabled = true;
     heartbeatState = false;
     lastHeartbeatToggleMs = millis();
-    Serial.printf("Heartbeat enabled on GPIO%u (%s)\n", HEARTBEAT_PIN, HEARTBEAT_IS_WS2812 ? "WS2812" : "GPIO");
+    Serial.printf("Heartbeat enabled on GPIO%u (%s), strip=%u, active=%u, brightness=%u, cap=%lumA\n",
+                  HEARTBEAT_PIN,
+                  HEARTBEAT_IS_WS2812 ? "WS2812" : "GPIO",
+                  HEARTBEAT_LED_COUNT,
+                  HEARTBEAT_ACTIVE_LED_COUNT,
+                  HEARTBEAT_BRIGHTNESS,
+                  static_cast<unsigned long>(HEARTBEAT_MAX_CURRENT_MA));
 }
 
 void updateHeartbeat(uint32_t now) {
@@ -451,12 +1215,15 @@ void updateHeartbeat(uint32_t now) {
         return;
     }
 
-    if (now - lastHeartbeatToggleMs >= HEARTBEAT_INTERVAL_MS) {
+    const uint32_t intervalMs = HEARTBEAT_IS_WS2812
+        ? ((HEARTBEAT_RENDER_MODE == HEARTBEAT_RENDER_GAMEPLAY) ? heartbeatIntervalForMode() : HEARTBEAT_INTERVAL_MS)
+        : HEARTBEAT_INTERVAL_MS;
+    if (now - lastHeartbeatToggleMs >= intervalMs) {
         lastHeartbeatToggleMs = now;
         heartbeatState = !heartbeatState;
         if (HEARTBEAT_IS_WS2812) {
-            heartbeatPixel.setPixelColor(0, heartbeatState ? heartbeatPixel.Color(0, 24, 0) : heartbeatPixel.Color(0, 0, 0));
-            heartbeatPixel.show();
+            heartbeatPatternIndex++;
+            renderHeartbeatPattern();
         } else {
             digitalWrite(HEARTBEAT_PIN, heartbeatState ? HIGH : LOW);
         }
@@ -569,6 +1336,17 @@ void initExternalFlashProbe() {
 }
 
 void initI2SAudio() {
+    if (CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE) {
+        pinMode(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN, OUTPUT);
+        digitalWrite(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN, LOW);
+        audioGpioOnlyState = false;
+        lastAudioGpioToggleMs = millis();
+        Serial.printf("Audio GPIO-only test mode active on pin %u (half-period=%u ms)\n",
+                      static_cast<unsigned>(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN),
+                      static_cast<unsigned>(CAPTAIN_AUDIO_GPIO_ONLY_HALF_PERIOD_MS));
+        return;
+    }
+
     if (CAPTAIN_AUDIO_SWAP_BCLK_LRCK_FOR_TEST) {
         audioBclkPinEffective = CAPTAIN_AUDIO_LRCK_PIN;
         audioLrckPinEffective = CAPTAIN_AUDIO_BCLK_PIN;
@@ -672,6 +1450,28 @@ void playStartupMelody() {
     Serial.println("Audio test: startup pattern complete");
 }
 
+void serviceAudioDiagnostics(uint32_t nowMs) {
+    if (CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE) {
+        if ((nowMs - lastAudioGpioToggleMs) >= CAPTAIN_AUDIO_GPIO_ONLY_HALF_PERIOD_MS) {
+            lastAudioGpioToggleMs = nowMs;
+            audioGpioOnlyState = !audioGpioOnlyState;
+            digitalWrite(CAPTAIN_AUDIO_GPIO_ONLY_TEST_PIN, audioGpioOnlyState ? HIGH : LOW);
+        }
+        return;
+    }
+
+    if (!CAPTAIN_AUDIO_CONTINUOUS_DIAGNOSTIC || !i2sAudioReady || audioToneQueue == nullptr) {
+        return;
+    }
+
+    if ((nowMs - lastAudioDiagnosticMs) < CAPTAIN_AUDIO_CONTINUOUS_INTERVAL_MS) {
+        return;
+    }
+
+    lastAudioDiagnosticMs = nowMs;
+    queueTone(440, CAPTAIN_AUDIO_CONTINUOUS_TONE_MS);
+}
+
 void initSolenoids() {
     for (uint8_t index = 0; index < SOLENOID_COUNT; index++) {
         const uint8_t pin = CAPTAIN_SOLENOID_PINS[index];
@@ -682,41 +1482,6 @@ void initSolenoids() {
 }
 
 void fireSolenoid(CaptainSolenoidId solenoidId);  // Forward declaration
-
-void resetS2LimiterForNewBall(uint32_t nowMs) {
-    s2FiresThisBall = 0;
-    s2FiresInWindow = 0;
-    s2WindowStartMs = nowMs;
-    s2LastFireMs = 0;
-}
-
-bool tryFireS2WithLimits(uint32_t nowMs) {
-    if (s2LastFireMs != 0 && (nowMs - s2LastFireMs) < S2_RETRIGGER_COOLDOWN_MS) {
-        s2SuppressedCooldown++;
-        return false;
-    }
-
-    if (s2WindowStartMs == 0 || (nowMs - s2WindowStartMs) >= S2_WINDOW_MS) {
-        s2WindowStartMs = nowMs;
-        s2FiresInWindow = 0;
-    }
-
-    if (s2FiresInWindow >= S2_MAX_FIRES_PER_WINDOW) {
-        s2SuppressedWindow++;
-        return false;
-    }
-
-    if (s2FiresThisBall >= S2_MAX_FIRES_PER_BALL) {
-        s2SuppressedBall++;
-        return false;
-    }
-
-    fireSolenoid(SOLENOID_S2);
-    s2LastFireMs = nowMs;
-    s2FiresInWindow++;
-    s2FiresThisBall++;
-    return true;
-}
 
 void fireSolenoid(CaptainSolenoidId solenoidId) {
     if (matrixLinkFaulted) {
@@ -765,6 +1530,7 @@ void onDirectInputPressed(CaptainDirectInputId inputId) {
     Serial.printf("Direct input pressed: %s\n", directInputName(inputId));
 
     if (inputId == DIRECT_INPUT_START) {
+        const uint32_t nowMs = millis();
         if (START_BUTTON_SOLENOID_TEST_ENABLED && (currentSW2Mode || !matrixDeviceReady)) {
             if (currentSW2Mode) {
                 Serial.println("[TEST] START pressed in Test mode -> firing S2");
@@ -775,11 +1541,11 @@ void onDirectInputPressed(CaptainDirectInputId inputId) {
             queueTone(988, 80);
             return;
         }
-        startNewGame();
+        startNewGame(nowMs);
         tiltLatched = false;
         currentSW2Mode = false;  // Reset SW2 (Game/Test) to Game on Start
         Serial.println("[START] New game started, tilt cleared, SW2 reset to Game mode");
-        queueTone(880, 80);
+        queueGameStartFanfare();
     } else if (inputId == DIRECT_INPUT_TILT) {
         tiltLatched = true;
         Serial.println("[TILT] Tilt latch activated");
@@ -866,14 +1632,26 @@ uint16_t composeHeadboxPattern(uint32_t score, bool blink) {
     static_cast<void>(score);
     uint16_t pattern = 0;
 
-    if (gameplayState.mode == GAME_MODE_ATTRACT || gameplayState.mode == GAME_MODE_GAME_OVER) {
-        setHeadboxLamp(pattern, HEADBOX_GAME_OVER, gameplayState.mode == GAME_MODE_GAME_OVER || blink);
+    if (gameplayState.mode == GAME_MODE_ATTRACT) {
+        setHeadboxLamp(pattern, HEADBOX_GAME_OVER, blink);
+    } else if (gameplayState.mode == GAME_MODE_GAME_OVER) {
+        setHeadboxLamp(pattern, HEADBOX_GAME_OVER, true);
+        setHeadboxLamp(pattern, HEADBOX_PLAYER_1, blink);
+        setHeadboxLamp(pattern, HEADBOX_BALL_1, blink);
     } else {
+        const bool ballLampOn = (gameplayState.mode == GAME_MODE_SERVE_BALL) ? blink : true;
+
         setHeadboxLamp(pattern, HEADBOX_PLAYER_1, true);
         if (gameplayState.currentBall >= 1 && gameplayState.currentBall <= 5) {
             const CaptainHeadboxLampId ballLamp = static_cast<CaptainHeadboxLampId>(HEADBOX_BALL_1 - (gameplayState.currentBall - 1));
-            setHeadboxLamp(pattern, ballLamp, true);
+            setHeadboxLamp(pattern, ballLamp, ballLampOn);
         }
+
+        // Single-player MVP uses the unused player lamps as status indicators.
+        setHeadboxLamp(pattern, HEADBOX_PLAYER_2, gameplayState.bonusMultiplier >= 2);
+        setHeadboxLamp(pattern, HEADBOX_PLAYER_3, gameplayState.bonusMultiplier >= 3);
+        setHeadboxLamp(pattern, HEADBOX_PLAYER_4,
+                       gameplayState.samePlayerLit && (gameplayState.mode == GAME_MODE_BONUS_COUNTDOWN || blink));
     }
 
     setHeadboxLamp(pattern, HEADBOX_TILT, tiltLatched);
@@ -884,6 +1662,7 @@ uint16_t composeHeadboxPattern(uint32_t score, bool blink) {
 void addGameplayScore(uint32_t points) {
     gameplayState.score += points;
     displayScore = gameplayState.score;
+    triggerHeartbeatScoreAccent(points);
 }
 
 void logGameplayAward(const char* label, uint32_t points, uint16_t bonusAdded) {
@@ -904,9 +1683,13 @@ void addGameplayBonus(uint16_t points) {
 
 void updateGameplayBonusMultiplier() {
     const uint8_t previousMultiplier = gameplayState.bonusMultiplier;
-    if (gameplayState.target1Complete && gameplayState.target2Complete && gameplayState.target3Complete) {
+    const uint8_t completedTargets =
+        static_cast<uint8_t>(gameplayState.target1Complete ? 1 : 0) +
+        static_cast<uint8_t>(gameplayState.target2Complete ? 1 : 0) +
+        static_cast<uint8_t>(gameplayState.target3Complete ? 1 : 0);
+    if (completedTargets >= 3) {
         gameplayState.bonusMultiplier = 3;
-    } else if (gameplayState.target1Complete && gameplayState.target2Complete) {
+    } else if (completedTargets >= 2) {
         gameplayState.bonusMultiplier = 2;
     } else {
         gameplayState.bonusMultiplier = 1;
@@ -914,6 +1697,17 @@ void updateGameplayBonusMultiplier() {
 
     if (gameplayState.bonusMultiplier != previousMultiplier) {
         Serial.printf("[GAME] Bonus multiplier -> %ux\n", static_cast<unsigned>(gameplayState.bonusMultiplier));
+        if (gameplayState.bonusMultiplier == 2) {
+            triggerHeartbeatZonePulse(HEARTBEAT_ZONE_PERFORMER_ROW,
+                                      heartbeatColorFromRgb(HEARTBEAT_MILESTONE_FLASH_RGB),
+                                      HEARTBEAT_MILESTONE_PULSE_MS);
+        } else if (gameplayState.bonusMultiplier == 3) {
+            triggerHeartbeatZonePulse(HEARTBEAT_ZONE_ORGAN_AND_ROCKET_TRAIL,
+                                      heartbeatColorFromRgb(HEARTBEAT_TARGET_FLASH_RGB),
+                                      HEARTBEAT_MILESTONE_PULSE_MS);
+            triggerHeartbeatEventChoreography(HEARTBEAT_EVENT_BONUS_X3,
+                                              HEARTBEAT_EVENT_STEP_MS * 6u + HEARTBEAT_EVENT_TRAIL_MS);
+        }
     }
 }
 
@@ -926,6 +1720,11 @@ void updateGameplayLaneCompletion() {
 
     if (!wasLit && gameplayState.samePlayerLit) {
         Serial.println("[GAME] Lane set complete -> Same Player / return-lane feature lit");
+        triggerHeartbeatZonePulse(HEARTBEAT_ZONE_SCORE_PANEL,
+                                  heartbeatColorFromRgb(HEARTBEAT_MILESTONE_FLASH_RGB),
+                                  HEARTBEAT_MILESTONE_PULSE_MS);
+        triggerHeartbeatEventChoreography(HEARTBEAT_EVENT_LANE_SET_COMPLETE,
+                                          HEARTBEAT_EVENT_STEP_MS * 6u + HEARTBEAT_EVENT_TRAIL_MS);
     }
 }
 
@@ -942,13 +1741,15 @@ void resetGameplayStateForNewBall() {
     gameplayState.target3Complete = false;
     gameplayState.samePlayerLit = false;
     gameplayState.lastBonusStepMs = 0;
+    gameplayState.serveBallAtMs = 0;
 }
 
-void startNewGame() {
+void startNewGame(uint32_t nowMs) {
     gameplayState.mode = GAME_MODE_SERVE_BALL;
     gameplayState.score = 0;
     gameplayState.currentBall = 1;
     resetGameplayStateForNewBall();
+    gameplayState.serveBallAtMs = nowMs + GAME_START_SERVE_DELAY_MS;
     displayScore = 0;
     Serial.println("[GAME] New single-player 5-ball game");
 }
@@ -985,10 +1786,13 @@ void updateGameplayState(uint32_t nowMs) {
 
     switch (gameplayState.mode) {
         case GAME_MODE_SERVE_BALL:
+            if (gameplayState.serveBallAtMs != 0 && nowMs < gameplayState.serveBallAtMs) {
+                break;
+            }
             Serial.printf("[GAME] Serving ball %u\n", static_cast<unsigned>(gameplayState.currentBall));
-            resetS2LimiterForNewBall(nowMs);
-            tryFireS2WithLimits(nowMs);
+            fireSolenoid(SOLENOID_S2);
             gameplayState.ballInPlay = true;
+            gameplayState.serveBallAtMs = 0;
             gameplayState.mode = GAME_MODE_BALL_IN_PLAY;
             break;
         case GAME_MODE_BONUS_COUNTDOWN:
@@ -1001,6 +1805,7 @@ void updateGameplayState(uint32_t nowMs) {
             }
             gameplayState.lastBonusStepMs = nowMs;
             if (gameplayState.bonus >= 1000) {
+                queueBonusCountTone();
                 addGameplayScore(1000u * gameplayState.bonusMultiplier);
                 gameplayState.bonus = static_cast<uint16_t>(gameplayState.bonus - 1000);
                 Serial.printf("[GAME] Bonus step: +%lu remaining=%u x%u total=%lu\n",
@@ -1032,6 +1837,7 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
     if (row == S20_OUTHOLE_SWITCH_ROW && col == S20_OUTHOLE_SWITCH_COL) {
         if (gameplayState.mode == GAME_MODE_BALL_IN_PLAY && gameplayState.ballInPlay) {
             Serial.println("[GAME] Ball drained -> bonus countdown");
+            queueDrainTone();
             startBonusCountdown(nowMs);
         }
         return;
@@ -1041,15 +1847,27 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
         return;
     }
 
+    const size_t switchIndex = captainSwitchBitIndex(row, col);
+    const uint32_t retriggerMs = gameplaySwitchRetriggerMs(row, col);
+    if (retriggerMs != 0 && lastGameplaySwitchHitMs[switchIndex] != 0 &&
+        (nowMs - lastGameplaySwitchHitMs[switchIndex]) < retriggerMs) {
+        return;
+    }
+    lastGameplaySwitchHitMs[switchIndex] = nowMs;
+
+    triggerHeartbeatPulseProfile(heartbeatPulseProfileForSwitch(row, col));
+
     switch (row) {
         case 0:
             if (col == 2) {
                 addGameplayScore(100);
+                queueScoringTone(100);
                 logGameplayAward("Spinner R", 100, 0);
             } else if (col == 3) {
                 addGameplayScore(500);
-                addGameplayBonus(500);
-                logGameplayAward("Return Lane R", 500, 500);
+                addGameplayBonus(1000);
+                queueScoringTone(500);
+                logGameplayAward("Return Lane R", 500, 1000);
             }
             break;
         case 1:
@@ -1058,18 +1876,21 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
                 addGameplayBonus(1000);
                 gameplayState.laneAComplete = true;
                 updateGameplayLaneCompletion();
+                queueScoringTone(1000);
                 logGameplayAward("Lane A", 1000, 1000);
             } else if (col == 2) {
-                addGameplayScore(50);
+                addGameplayScore(500);
                 addGameplayBonus(2000);
                 gameplayState.target1Complete = true;
                 updateGameplayBonusMultiplier();
-                logGameplayAward("Target 1", 50, 2000);
+                queueScoringTone(500);
+                logGameplayAward("Target 1", 500, 2000);
             } else if (col == 3) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
                     fireSolenoid(SOLENOID_S3);
                 }
+                queueSlingshotTone();
                 logGameplayAward("Slingshot L", 100, 0);
             }
             break;
@@ -1079,21 +1900,25 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
                 addGameplayBonus(1000);
                 gameplayState.laneBComplete = true;
                 updateGameplayLaneCompletion();
+                queueScoringTone(1000);
                 logGameplayAward("Lane B", 1000, 1000);
             } else if (col == 1) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
                     fireSolenoid(SOLENOID_S5);
                 }
+                queueBumperTone();
                 logGameplayAward("Bumper L", 100, 0);
             } else if (col == 2) {
                 addGameplayScore(50);
-                addGameplayBonus(50);
-                logGameplayAward("Side Switch 1", 50, 50);
+                addGameplayBonus(1000);
+                queueScoringTone(50);
+                logGameplayAward("Side Switch 1", 50, 1000);
             } else if (col == 3) {
                 addGameplayScore(500);
-                addGameplayBonus(500);
-                logGameplayAward("Return Lane L", 500, 500);
+                addGameplayBonus(1000);
+                queueScoringTone(500);
+                logGameplayAward("Return Lane L", 500, 1000);
             }
             break;
         case 3:
@@ -1102,20 +1927,24 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
                 addGameplayBonus(1000);
                 gameplayState.laneCComplete = true;
                 updateGameplayLaneCompletion();
+                queueScoringTone(1000);
                 logGameplayAward("Lane C", 1000, 1000);
             } else if (col == 1) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
                     fireSolenoid(SOLENOID_S6);
                 }
+                queueBumperTone();
                 logGameplayAward("Bumper R", 100, 0);
             } else if (col == 2) {
                 addGameplayScore(100);
+                queueScoringTone(100);
                 logGameplayAward("Spinner L", 100, 0);
             } else if (col == 3) {
                 addGameplayScore(500);
-                addGameplayBonus(500);
-                logGameplayAward("Bonus Lane L", 500, 500);
+                addGameplayBonus(1000);
+                queueScoringTone(500);
+                logGameplayAward("Bonus Lane L", 500, 1000);
             }
             break;
         case 4:
@@ -1124,36 +1953,42 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
                 addGameplayBonus(1000);
                 gameplayState.laneDComplete = true;
                 updateGameplayLaneCompletion();
+                queueScoringTone(1000);
                 logGameplayAward("Lane D", 1000, 1000);
             } else if (col == 2) {
-                addGameplayScore(50);
+                addGameplayScore(500);
                 addGameplayBonus(2000);
                 gameplayState.target2Complete = true;
                 updateGameplayBonusMultiplier();
-                logGameplayAward("Target 2", 50, 2000);
+                queueScoringTone(500);
+                logGameplayAward("Target 2", 500, 2000);
             } else if (col == 3) {
                 addGameplayScore(100);
                 if (MATRIX_SWITCH_SOLENOIDS_ENABLED) {
                     fireSolenoid(SOLENOID_S4);
                 }
+                queueSlingshotTone();
                 logGameplayAward("Slingshot R", 100, 0);
             }
             break;
         case 5:
             if (col == 0) {
-                addGameplayScore(50);
+                addGameplayScore(1000);
                 addGameplayBonus(2000);
                 gameplayState.target3Complete = true;
                 updateGameplayBonusMultiplier();
-                logGameplayAward("Target 3", 50, 2000);
+                queueScoringTone(1000);
+                logGameplayAward("Target 3", 1000, 2000);
             } else if (col == 2) {
                 addGameplayScore(50);
-                addGameplayBonus(50);
-                logGameplayAward("Side Switch 2", 50, 50);
+                addGameplayBonus(1000);
+                queueScoringTone(50);
+                logGameplayAward("Side Switch 2", 50, 1000);
             } else if (col == 3) {
                 addGameplayScore(500);
-                addGameplayBonus(500);
-                logGameplayAward("Bonus Lane R", 500, 500);
+                addGameplayBonus(1000);
+                queueScoringTone(500);
+                logGameplayAward("Bonus Lane R", 500, 1000);
             }
             break;
         default:
@@ -1430,16 +2265,16 @@ void buildGameplayLampFrame(uint8_t* lampRows) {
             break;
     }
 
-    if (gameplayState.laneAComplete) {
+    if (!gameplayState.laneAComplete) {
         lampRows[1] |= captainMatrixLampRowMask(1);
     }
-    if (gameplayState.laneBComplete) {
+    if (!gameplayState.laneBComplete) {
         lampRows[2] |= captainMatrixLampRowMask(1);
     }
-    if (gameplayState.laneCComplete) {
+    if (!gameplayState.laneCComplete) {
         lampRows[3] |= captainMatrixLampRowMask(1);
     }
-    if (gameplayState.laneDComplete) {
+    if (!gameplayState.laneDComplete) {
         lampRows[4] |= captainMatrixLampRowMask(1);
     }
 
@@ -1590,7 +2425,6 @@ void setup() {
         pinMode(CAPTAIN_HEADBOX_595_LATCH_PIN, OUTPUT);
     }
 
-    resetS2LimiterForNewBall(millis());
     initDirectInputs();
     initHeartbeat();
     initI2SAudio();
@@ -1633,6 +2467,9 @@ void setup() {
                 AudioToneEvent event = {};
                 for (;;) {
                     if (xQueueReceive(audioToneQueue, &event, portMAX_DELAY) == pdPASS) {
+                        if (event.delayBeforeMs != 0) {
+                            vTaskDelay(pdMS_TO_TICKS(event.delayBeforeMs));
+                        }
                         playI2STestTone(event.frequencyHz, event.durationMs);
                     }
                 }
@@ -1651,6 +2488,7 @@ void setup() {
             for (;;) {
                 const uint32_t now = millis();
                 updateHeartbeat(now);
+                serviceAudioDiagnostics(now);
                 updateSolenoidPulses(now);
                 processDirectInputs(now);
 
@@ -1690,16 +2528,25 @@ void setup() {
                             continue;
                         }
 
-                        const bool writeOk = writeMatrixCommand(now);
-                        if (writeOk) {
-                            matrixWriteOkCount++;
+                        uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
+                        const bool readDue = (now - lastMatrixSwitchReadMs) >= MATRIX_SWITCH_READ_INTERVAL_MS;
+                        bool writeOk = true;
+                        bool readOk = true;
+                        if (readDue) {
+                            lastMatrixSwitchReadMs = now;
+                            readOk = readMatrixSwitches(switchBits);
                         } else {
-                            matrixWriteFailCount++;
+                            writeOk = writeMatrixCommand(now);
                         }
 
-                        uint8_t switchBits[CAPTAIN_SWITCH_BYTES] = {};
-                        const bool readOk = readMatrixSwitches(switchBits);
-                        if (readOk) {
+                        if (!readDue) {
+                            if (writeOk) {
+                                matrixWriteOkCount++;
+                            } else {
+                                matrixWriteFailCount++;
+                            }
+                        }
+                        if (readOk && readDue) {
                             lastRawMatrixSwitch0 = switchBits[0];
                             lastRawMatrixSwitch1 = switchBits[1];
                             lastRawMatrixSwitch2 = switchBits[2];
@@ -1716,10 +2563,14 @@ void setup() {
                             matrixSwitch0Seen = true;
                             memcpy(switchBits, filteredSwitchBits, CAPTAIN_SWITCH_BYTES);
                         } else {
-                            matrixReadFailCount++;
+                            if (readDue) {
+                                matrixReadFailCount++;
+                            }
                         }
-                        if (writeOk && readOk && !matrixLinkFaulted) {
-                            handleSwitchEdges(switchBits);
+                        if (((!readDue && writeOk) || (readDue && readOk)) && !matrixLinkFaulted) {
+                            if (readDue) {
+                                handleSwitchEdges(switchBits);
+                            }
                             matrixDeviceReady = true;
                         } else {
                             matrixDeviceReady = false;
