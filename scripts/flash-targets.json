@@ -1,0 +1,14 @@
+{
+  "matrix": {
+    "expectedMac": "10:51:DB:FF:FE:0D:30:30",
+    "notes": "Matrix board immutable MAC captured 2026-06-02 on COM4"
+  },
+  "control": {
+    "expectedMac": "44:1D:64:F8:2B:A0",
+    "notes": "Control board immutable MAC captured 2026-06-02 on COM5"
+  },
+  "crowpanel": {
+    "expectedMac": "",
+    "notes": "Session deny-list target. COM12 is off limits and hard-blocked."
+  }
+}

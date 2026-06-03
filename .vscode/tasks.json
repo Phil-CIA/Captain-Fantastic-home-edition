@@ -29,6 +29,74 @@
 				"upload"
 			],
 			"group": "build"
+		},
+		{
+			"label": "Captain: Build (matrix guarded)",
+			"detail": "Matrix build through guarded wrapper",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/guarded-flash.ps1",
+				"-Target",
+				"matrix",
+				"-Action",
+				"build"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Captain: Upload (matrix guarded)",
+			"detail": "Matrix upload with MAC precheck and COM12 hard block",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/guarded-flash.ps1",
+				"-Target",
+				"matrix",
+				"-Action",
+				"upload"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Captain: Build (control guarded)",
+			"detail": "Control build through guarded wrapper",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/guarded-flash.ps1",
+				"-Target",
+				"control",
+				"-Action",
+				"build"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Captain: Upload (control guarded)",
+			"detail": "Control upload with MAC precheck and COM12 hard block",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/guarded-flash.ps1",
+				"-Target",
+				"control",
+				"-Action",
+				"upload"
+			],
+			"group": "build"
 		}
 	]
 }

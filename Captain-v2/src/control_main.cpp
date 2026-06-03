@@ -20,6 +20,14 @@
 #include "headbox_595_config.h"
 #include "displays.h"
 
+#ifndef CAPTAIN_BUILD_GIT_HASH
+#define CAPTAIN_BUILD_GIT_HASH "unknown"
+#endif
+
+#ifndef CAPTAIN_BUILD_GIT_STATE
+#define CAPTAIN_BUILD_GIT_STATE "unknown"
+#endif
+
 namespace {
 constexpr uint32_t POLL_MS = 30;
 constexpr uint32_t DIRECT_INPUT_POLL_MS = 5;
@@ -1577,6 +1585,11 @@ void setup() {
     initSolenoids();
     delay(50);
     Serial.println("CAPTAIN_V2 setup start");
+    Serial.printf("Build: git=%s state=%s built=%s %s\n",
+                  CAPTAIN_BUILD_GIT_HASH,
+                  CAPTAIN_BUILD_GIT_STATE,
+                  __DATE__,
+                  __TIME__);
     Serial.printf("Attract config: enabled=%u period=%lu minStep=%lu laps=%u\n",
                   CAPTAIN_HEADBOX_ATTRACT_LOOP ? 1u : 0u,
                   static_cast<unsigned long>(CAPTAIN_HEADBOX_ATTRACT_LOOP_PERIOD_MS),

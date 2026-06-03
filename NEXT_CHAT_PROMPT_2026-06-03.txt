@@ -1,0 +1,23 @@
+Resume from HANDOFF_2026-06-03.md.
+
+Priority:
+1) Confirm guarded flash + build identity standard is intact.
+2) Validate control boot shows Build: git/state/date/time line.
+3) Run a short gameplay baseline check (no broad refactor).
+4) Review archived cleanup artifacts and decide whether to purge generated .pio build folders.
+
+Rules:
+- Use scripts/guarded-flash.ps1 for matrix/control uploads.
+- Keep COM12 hard-blocked.
+- Use MAC identity checks from scripts/flash-targets.json.
+- Only use -ForceMacMismatch when explicitly intended.
+
+Useful commands:
+- powershell -ExecutionPolicy Bypass -File scripts/guarded-flash.ps1 -Target matrix -Action build
+- powershell -ExecutionPolicy Bypass -File scripts/guarded-flash.ps1 -Target matrix -Action upload
+- powershell -ExecutionPolicy Bypass -File scripts/guarded-flash.ps1 -Target control -Action build
+- powershell -ExecutionPolicy Bypass -File scripts/guarded-flash.ps1 -Target control -Action upload
+
+Cleanup status:
+- Backup/capture artifacts were archived under archive/session-artifacts/2026-06-03/.
+- Optional remaining cleanup is generated .pio folders only (if disk cleanup needed).
