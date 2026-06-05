@@ -35,6 +35,108 @@ constexpr uint8_t DIRECT_INPUT_DEBOUNCE_TICKS = 3;
 constexpr uint8_t HEARTBEAT_PIN = 15;
 constexpr uint32_t HEARTBEAT_INTERVAL_MS = 500;
 constexpr bool HEARTBEAT_IS_WS2812 = true;
+constexpr uint16_t GPIO15_WS2812_CHAIN_PIXELS = 301;  // D1 + external strip chain
+struct GameplayLedSegment {
+    uint16_t startPixel;
+    uint16_t pixelCount;
+};
+struct GameplayLedRange {
+    uint16_t startPixel;
+    uint16_t endPixelInclusive;
+};
+struct GameplayGraphicZone {
+    const GameplayLedRange* ranges;
+    uint8_t rangeCount;
+};
+constexpr uint8_t GAMEPLAY_LED_SEGMENT_COUNT = 15;
+// Physical strip map (pixel 0 reserved for onboard first pixel, strip starts at pixel 1).
+constexpr GameplayLedSegment GAMEPLAY_LED_SEGMENTS[GAMEPLAY_LED_SEGMENT_COUNT] = {
+    {1, 11},
+    {12, 11},
+    {23, 30},
+    {53, 32},
+    {85, 30},
+    {115, 23},
+    {138, 9},
+    {147, 22},
+    {169, 26},
+    {195, 18},
+    {213, 18},
+    {231, 15},
+    {246, 19},
+    {265, 8},
+    {273, 28},
+};
+// Graphic zones from playfield artwork mapping.
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_1[] = {
+    {175, 179},
+    {245, 249},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_2[] = {
+    {175, 179},
+    {230, 249},
+    {1, 8},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_3[] = {
+    {14, 30},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_4[] = {
+    {40, 60},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_5[] = {
+    {184, 199},
+    {256, 264},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_6[] = {
+    {272, 293},
+    {212, 230},
+    {1, 4},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_6A[] = {
+    {275, 277},
+    {215, 217},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_6B[] = {
+    {277, 280},
+    {218, 221},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_6C[] = {
+    {281, 282},
+    {222, 224},
+};
+constexpr GameplayLedRange GAMEPLAY_GRAPHIC_ZONE_6D[] = {
+    {282, 286},
+    {225, 227},
+};
+constexpr GameplayGraphicZone GAMEPLAY_GRAPHIC_ZONES[] = {
+    {GAMEPLAY_GRAPHIC_ZONE_1, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_1) / sizeof(GAMEPLAY_GRAPHIC_ZONE_1[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_2, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_2) / sizeof(GAMEPLAY_GRAPHIC_ZONE_2[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_3, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_3) / sizeof(GAMEPLAY_GRAPHIC_ZONE_3[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_4, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_4) / sizeof(GAMEPLAY_GRAPHIC_ZONE_4[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_5, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_5) / sizeof(GAMEPLAY_GRAPHIC_ZONE_5[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_6, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_6) / sizeof(GAMEPLAY_GRAPHIC_ZONE_6[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_6A, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_6A) / sizeof(GAMEPLAY_GRAPHIC_ZONE_6A[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_6B, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_6B) / sizeof(GAMEPLAY_GRAPHIC_ZONE_6B[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_6C, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_6C) / sizeof(GAMEPLAY_GRAPHIC_ZONE_6C[0]))},
+    {GAMEPLAY_GRAPHIC_ZONE_6D, static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONE_6D) / sizeof(GAMEPLAY_GRAPHIC_ZONE_6D[0]))},
+};
+constexpr uint8_t GAMEPLAY_GRAPHIC_ZONE_COUNT = static_cast<uint8_t>(sizeof(GAMEPLAY_GRAPHIC_ZONES) / sizeof(GAMEPLAY_GRAPHIC_ZONES[0]));
+constexpr uint8_t GAMEPLAY_LED_MAX_CHANNEL = 96;
+constexpr uint16_t GAMEPLAY_LED_CURRENT_LIMIT_MA = 1200;
+constexpr bool HEARTBEAT_ENABLE_IN_ATTRACT = false;
+constexpr bool HEARTBEAT_ENABLE_IN_SERVE_BALL = false;
+constexpr bool HEARTBEAT_ENABLE_IN_BALL_IN_PLAY = false;
+constexpr bool HEARTBEAT_ENABLE_IN_BONUS_COUNTDOWN = false;
+constexpr bool HEARTBEAT_ENABLE_IN_GAME_OVER = false;
+constexpr bool HEARTBEAT_FEATURE_ENABLED =
+    HEARTBEAT_ENABLE_IN_ATTRACT ||
+    HEARTBEAT_ENABLE_IN_SERVE_BALL ||
+    HEARTBEAT_ENABLE_IN_BALL_IN_PLAY ||
+    HEARTBEAT_ENABLE_IN_BONUS_COUNTDOWN ||
+    HEARTBEAT_ENABLE_IN_GAME_OVER;
+constexpr bool GAMEPLAY_LED_FEEDBACK_ENABLED = true;
+constexpr uint32_t GAMEPLAY_LED_PULSE_MS = 80;
+constexpr uint32_t GAMEPLAY_LED_ANIM_STEP_MS = 120;
 constexpr uint32_t MATRIX_DIAG_POLL_MS = 250;
 constexpr uint32_t MATRIX_LINK_TIMEOUT_MS = 1000;
 constexpr uint32_t MATRIX_LINK_SUMMARY_MS = 1000;
@@ -133,7 +235,12 @@ uint8_t audioLrckPinEffective = CAPTAIN_AUDIO_LRCK_PIN;
 bool heartbeatEnabled = false;
 bool heartbeatState = false;
 uint32_t lastHeartbeatToggleMs = 0;
-Adafruit_NeoPixel heartbeatPixel(1, HEARTBEAT_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel heartbeatPixel(GPIO15_WS2812_CHAIN_PIXELS, HEARTBEAT_PIN, NEO_GRB + NEO_KHZ800);
+bool gameplayLedPulseActive = false;
+uint8_t gameplayLedPulseSegment = 0;
+uint32_t gameplayLedPulseUntilMs = 0;
+uint32_t gameplayLedLastAnimStepMs = 0;
+uint8_t gameplayLedAnimStep = 0;
 bool otaReady = false;
 bool otaInProgress = false;
 uint32_t lastOtaVisualToggleMs = 0;
@@ -192,6 +299,16 @@ void startNewGame();
 void startBonusCountdown(uint32_t nowMs);
 void updateGameplayState(uint32_t nowMs);
 void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs);
+void triggerGameplayLedPulse(uint8_t segment, uint8_t red, uint8_t green, uint8_t blue, uint32_t nowMs);
+void updateGameplayLedPulse(uint32_t nowMs);
+void updateGameplayLedPattern(uint32_t nowMs);
+void setGameplayLedZone(uint8_t segment, uint8_t red, uint8_t green, uint8_t blue);
+void setGameplayLedZoneNoShow(uint8_t segment, uint8_t red, uint8_t green, uint8_t blue);
+void setGameplayGraphicZoneNoShow(uint8_t graphicZone, uint8_t red, uint8_t green, uint8_t blue);
+void clearGameplayLedStripBuffer();
+void showGameplayLedStripBuffer();
+void applyGameplayLedCurrentLimit(uint16_t pixelCount, uint8_t& red, uint8_t& green, uint8_t& blue);
+uint8_t mapSwitchToGameplayLedZone(uint8_t row, uint8_t col);
 bool queueTone(uint16_t frequencyHz, uint16_t durationMs) {
     if (!i2sAudioReady || CAPTAIN_AUDIO_GPIO_ONLY_TEST_MODE || audioToneQueue == nullptr) {
         return false;
@@ -428,6 +545,21 @@ void initWifiAndOta() {
 }
 
 void initHeartbeat() {
+    if (!HEARTBEAT_FEATURE_ENABLED) {
+        if (HEARTBEAT_IS_WS2812) {
+            heartbeatPixel.begin();
+            heartbeatPixel.setPixelColor(0, heartbeatPixel.Color(0, 0, 0));
+            heartbeatPixel.show();
+        } else {
+            pinMode(HEARTBEAT_PIN, OUTPUT);
+            digitalWrite(HEARTBEAT_PIN, LOW);
+        }
+        heartbeatEnabled = false;
+        heartbeatState = false;
+        Serial.printf("Heartbeat disabled by policy on GPIO%u\n", HEARTBEAT_PIN);
+        return;
+    }
+
     const bool conflictsHeadboxShiftRegister =
         (HEARTBEAT_PIN == static_cast<uint8_t>(CAPTAIN_HEADBOX_595_DATA_PIN)) ||
         (HEARTBEAT_PIN == static_cast<uint8_t>(CAPTAIN_HEADBOX_595_CLOCK_PIN)) ||
@@ -459,6 +591,40 @@ void updateHeartbeat(uint32_t now) {
         return;
     }
 
+    bool modeAllowsHeartbeat = true;
+    switch (gameplayState.mode) {
+        case GAME_MODE_ATTRACT:
+            modeAllowsHeartbeat = HEARTBEAT_ENABLE_IN_ATTRACT;
+            break;
+        case GAME_MODE_SERVE_BALL:
+            modeAllowsHeartbeat = HEARTBEAT_ENABLE_IN_SERVE_BALL;
+            break;
+        case GAME_MODE_BALL_IN_PLAY:
+            modeAllowsHeartbeat = HEARTBEAT_ENABLE_IN_BALL_IN_PLAY;
+            break;
+        case GAME_MODE_BONUS_COUNTDOWN:
+            modeAllowsHeartbeat = HEARTBEAT_ENABLE_IN_BONUS_COUNTDOWN;
+            break;
+        case GAME_MODE_GAME_OVER:
+            modeAllowsHeartbeat = HEARTBEAT_ENABLE_IN_GAME_OVER;
+            break;
+        default:
+            break;
+    }
+
+    if (!modeAllowsHeartbeat) {
+        if (heartbeatState) {
+            heartbeatState = false;
+            if (HEARTBEAT_IS_WS2812) {
+                heartbeatPixel.setPixelColor(0, heartbeatPixel.Color(0, 0, 0));
+                heartbeatPixel.show();
+            } else {
+                digitalWrite(HEARTBEAT_PIN, LOW);
+            }
+        }
+        return;
+    }
+
     if (now - lastHeartbeatToggleMs >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeatToggleMs = now;
         heartbeatState = !heartbeatState;
@@ -469,6 +635,187 @@ void updateHeartbeat(uint32_t now) {
             digitalWrite(HEARTBEAT_PIN, heartbeatState ? HIGH : LOW);
         }
     }
+}
+
+void triggerGameplayLedPulse(uint8_t segment, uint8_t red, uint8_t green, uint8_t blue, uint32_t nowMs) {
+    if (!GAMEPLAY_LED_FEEDBACK_ENABLED || !HEARTBEAT_IS_WS2812) {
+        return;
+    }
+
+    setGameplayLedZone(segment, red, green, blue);
+    gameplayLedPulseActive = true;
+    gameplayLedPulseSegment = segment;
+    gameplayLedPulseUntilMs = nowMs + GAMEPLAY_LED_PULSE_MS;
+}
+
+void updateGameplayLedPulse(uint32_t nowMs) {
+    if (!GAMEPLAY_LED_FEEDBACK_ENABLED || !HEARTBEAT_IS_WS2812 || !gameplayLedPulseActive) {
+        return;
+    }
+
+    if (static_cast<int32_t>(nowMs - gameplayLedPulseUntilMs) >= 0) {
+        setGameplayLedZone(gameplayLedPulseSegment, 0, 0, 0);
+        gameplayLedPulseActive = false;
+    }
+}
+
+void applyGameplayLedCurrentLimit(uint16_t pixelCount, uint8_t& red, uint8_t& green, uint8_t& blue) {
+    if (red > GAMEPLAY_LED_MAX_CHANNEL) red = GAMEPLAY_LED_MAX_CHANNEL;
+    if (green > GAMEPLAY_LED_MAX_CHANNEL) green = GAMEPLAY_LED_MAX_CHANNEL;
+    if (blue > GAMEPLAY_LED_MAX_CHANNEL) blue = GAMEPLAY_LED_MAX_CHANNEL;
+
+    const uint16_t channelSum = static_cast<uint16_t>(red) + static_cast<uint16_t>(green) + static_cast<uint16_t>(blue);
+    if (channelSum == 0 || pixelCount == 0) {
+        return;
+    }
+
+    const uint32_t estimatedMa = (static_cast<uint32_t>(pixelCount) * static_cast<uint32_t>(channelSum) * 20u) / 255u;
+    if (estimatedMa <= GAMEPLAY_LED_CURRENT_LIMIT_MA) {
+        return;
+    }
+
+    red = static_cast<uint8_t>((static_cast<uint32_t>(red) * GAMEPLAY_LED_CURRENT_LIMIT_MA) / estimatedMa);
+    green = static_cast<uint8_t>((static_cast<uint32_t>(green) * GAMEPLAY_LED_CURRENT_LIMIT_MA) / estimatedMa);
+    blue = static_cast<uint8_t>((static_cast<uint32_t>(blue) * GAMEPLAY_LED_CURRENT_LIMIT_MA) / estimatedMa);
+}
+
+void clearGameplayLedStripBuffer() {
+    const uint16_t total = static_cast<uint16_t>(heartbeatPixel.numPixels());
+    for (uint16_t i = 0; i < total; i++) {
+        heartbeatPixel.setPixelColor(i, 0);
+    }
+}
+
+void showGameplayLedStripBuffer() {
+    heartbeatPixel.show();
+}
+
+void setGameplayLedZoneNoShow(uint8_t segment, uint8_t red, uint8_t green, uint8_t blue) {
+    const uint16_t total = static_cast<uint16_t>(heartbeatPixel.numPixels());
+    const uint8_t zoneIndex = static_cast<uint8_t>(segment % GAMEPLAY_LED_SEGMENT_COUNT);
+    const GameplayLedSegment zoneDef = GAMEPLAY_LED_SEGMENTS[zoneIndex];
+    const uint16_t zoneStart = zoneDef.startPixel < total ? zoneDef.startPixel : total;
+    const uint16_t zoneEnd = static_cast<uint16_t>((zoneStart + zoneDef.pixelCount) < total ? (zoneStart + zoneDef.pixelCount) : total);
+    const uint16_t zonePixels = zoneEnd > zoneStart ? static_cast<uint16_t>(zoneEnd - zoneStart) : 0;
+    applyGameplayLedCurrentLimit(zonePixels, red, green, blue);
+    const uint32_t color = heartbeatPixel.Color(red, green, blue);
+
+    for (uint16_t i = zoneStart; i < zoneEnd; i++) {
+        heartbeatPixel.setPixelColor(i, color);
+    }
+}
+
+void setGameplayLedZone(uint8_t segment, uint8_t red, uint8_t green, uint8_t blue) {
+    clearGameplayLedStripBuffer();
+    setGameplayLedZoneNoShow(segment, red, green, blue);
+    showGameplayLedStripBuffer();
+}
+
+void setGameplayGraphicZoneNoShow(uint8_t graphicZone, uint8_t red, uint8_t green, uint8_t blue) {
+    const uint16_t total = static_cast<uint16_t>(heartbeatPixel.numPixels());
+    const uint8_t zoneIndex = static_cast<uint8_t>(graphicZone % GAMEPLAY_GRAPHIC_ZONE_COUNT);
+    const GameplayGraphicZone& zone = GAMEPLAY_GRAPHIC_ZONES[zoneIndex];
+
+    uint16_t zonePixelCount = 0;
+    for (uint8_t r = 0; r < zone.rangeCount; r++) {
+        const GameplayLedRange& span = zone.ranges[r];
+        if (span.endPixelInclusive < span.startPixel) {
+            continue;
+        }
+        const uint16_t clampedStart = span.startPixel < total ? span.startPixel : total;
+        const uint16_t clampedEnd = span.endPixelInclusive < total ? span.endPixelInclusive : static_cast<uint16_t>(total > 0 ? total - 1 : 0);
+        if (clampedEnd >= clampedStart) {
+            zonePixelCount = static_cast<uint16_t>(zonePixelCount + (clampedEnd - clampedStart + 1));
+        }
+    }
+
+    applyGameplayLedCurrentLimit(zonePixelCount, red, green, blue);
+    const uint32_t color = heartbeatPixel.Color(red, green, blue);
+
+    for (uint8_t r = 0; r < zone.rangeCount; r++) {
+        const GameplayLedRange& span = zone.ranges[r];
+        if (span.endPixelInclusive < span.startPixel) {
+            continue;
+        }
+        const uint16_t clampedStart = span.startPixel < total ? span.startPixel : total;
+        const uint16_t clampedEnd = span.endPixelInclusive < total ? span.endPixelInclusive : static_cast<uint16_t>(total > 0 ? total - 1 : 0);
+        if (clampedEnd < clampedStart) {
+            continue;
+        }
+        for (uint16_t i = clampedStart; i <= clampedEnd; i++) {
+            heartbeatPixel.setPixelColor(i, color);
+        }
+    }
+}
+
+void updateGameplayLedPattern(uint32_t nowMs) {
+    if (!GAMEPLAY_LED_FEEDBACK_ENABLED || !HEARTBEAT_IS_WS2812 || gameplayLedPulseActive) {
+        return;
+    }
+
+    if ((nowMs - gameplayLedLastAnimStepMs) < GAMEPLAY_LED_ANIM_STEP_MS) {
+        return;
+    }
+    gameplayLedLastAnimStepMs = nowMs;
+    gameplayLedAnimStep++;
+
+    clearGameplayLedStripBuffer();
+
+    switch (gameplayState.mode) {
+        case GAME_MODE_ATTRACT: {
+            const uint8_t lead = static_cast<uint8_t>(gameplayLedAnimStep % GAMEPLAY_GRAPHIC_ZONE_COUNT);
+            const uint8_t tail = static_cast<uint8_t>((lead + GAMEPLAY_GRAPHIC_ZONE_COUNT - 1) % GAMEPLAY_GRAPHIC_ZONE_COUNT);
+            setGameplayGraphicZoneNoShow(lead, 96, 170, 210);
+            setGameplayGraphicZoneNoShow(tail, 110, 50, 90);
+            break;
+        }
+        case GAME_MODE_SERVE_BALL: {
+            const uint8_t serveSegment = static_cast<uint8_t>((gameplayState.currentBall == 0 ? 0 : gameplayState.currentBall - 1) % GAMEPLAY_GRAPHIC_ZONE_COUNT);
+            const bool on = ((gameplayLedAnimStep % 4u) < 2u);
+            if (on) {
+                setGameplayGraphicZoneNoShow(serveSegment, 170, 160, 40);
+            }
+            break;
+        }
+        case GAME_MODE_BALL_IN_PLAY: {
+            const uint8_t litSegments = static_cast<uint8_t>(min<uint32_t>(GAMEPLAY_GRAPHIC_ZONE_COUNT, (gameplayState.score / 3000u) + 1u));
+            uint8_t r = 48;
+            uint8_t g = 130;
+            uint8_t b = 80;
+            if (gameplayState.bonusMultiplier == 2) {
+                r = 80; g = 120; b = 180;
+            } else if (gameplayState.bonusMultiplier >= 3) {
+                r = 180; g = 90; b = 190;
+            }
+            for (uint8_t i = 0; i < litSegments; i++) {
+                setGameplayGraphicZoneNoShow(i, r, g, b);
+            }
+            break;
+        }
+        case GAME_MODE_BONUS_COUNTDOWN: {
+            const bool on = ((gameplayLedAnimStep % 2u) == 0u);
+            if (on) {
+                for (uint8_t i = 0; i < GAMEPLAY_GRAPHIC_ZONE_COUNT; i++) {
+                    setGameplayGraphicZoneNoShow(i, 180, 95, 20);
+                }
+            }
+            break;
+        }
+        case GAME_MODE_GAME_OVER: {
+            const uint8_t idx = static_cast<uint8_t>(gameplayLedAnimStep % GAMEPLAY_GRAPHIC_ZONE_COUNT);
+            setGameplayGraphicZoneNoShow(idx, 220, 24, 24);
+            break;
+        }
+        default:
+            break;
+    }
+
+    showGameplayLedStripBuffer();
+}
+
+uint8_t mapSwitchToGameplayLedZone(uint8_t row, uint8_t col) {
+    const uint8_t switchIndex = static_cast<uint8_t>((row * CAPTAIN_SWITCH_COLS) + col);
+    return static_cast<uint8_t>(switchIndex % GAMEPLAY_LED_SEGMENT_COUNT);
 }
 
 void flashWriteEnable() {
@@ -996,6 +1343,7 @@ void updateGameplayState(uint32_t nowMs) {
             Serial.printf("[GAME] Serving ball %u\n", static_cast<unsigned>(gameplayState.currentBall));
             resetS2LimiterForNewBall(nowMs);
             tryFireS2WithLimits(nowMs);
+            triggerGameplayLedPulse(0, 0, 24, 24, nowMs);
             gameplayState.ballInPlay = true;
             gameplayState.mode = GAME_MODE_BALL_IN_PLAY;
             break;
@@ -1040,6 +1388,7 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
     if (row == S20_OUTHOLE_SWITCH_ROW && col == S20_OUTHOLE_SWITCH_COL) {
         if (gameplayState.mode == GAME_MODE_BALL_IN_PLAY && gameplayState.ballInPlay) {
             Serial.println("[GAME] Ball drained -> bonus countdown");
+            triggerGameplayLedPulse(static_cast<uint8_t>(GAMEPLAY_LED_SEGMENT_COUNT - 1), 24, 0, 0, nowMs);
             startBonusCountdown(nowMs);
         }
         return;
@@ -1048,6 +1397,9 @@ void handleGameplaySwitchHit(uint8_t row, uint8_t col, uint32_t nowMs) {
     if (gameplayState.mode != GAME_MODE_BALL_IN_PLAY || !gameplayState.ballInPlay) {
         return;
     }
+
+    const uint8_t ledZone = mapSwitchToGameplayLedZone(row, col);
+    triggerGameplayLedPulse(ledZone, 0, 32, 0, nowMs);
 
     switch (row) {
         case 0:
@@ -1678,6 +2030,8 @@ void setup() {
                 }
 
                 updateGameplayState(now);
+                updateGameplayLedPattern(now);
+                updateGameplayLedPulse(now);
 
                 if (now - lastPoll >= POLL_MS) {
                     lastPoll = now;

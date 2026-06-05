@@ -1,0 +1,36 @@
+Resume from HANDOFF_2026-06-05.md.
+
+Current validated baseline:
+1) Control gameplay LED renderer now uses graphic-zone mapping.
+2) User confirmed overlap in zone map is intentional and must remain.
+3) Palette has been shifted brighter for painted-glass readability (fewer dark hues).
+4) Guarded control upload + COM12 hard block + MAC precheck remain mandatory.
+5) Post-flash Monitor-SwitchHealth checks passed with warnings=0.
+
+Primary focus next session:
+1) Bench-verify visual readability across all gameplay modes through glass:
+	- attract
+	- serve ball
+	- ball in play
+	- bonus countdown
+	- game over
+2) If still too dim in spots, add one global gameplay brightness bias scalar so tuning is one-parameter.
+3) Keep behavior and safety checks tight; avoid unrelated refactors.
+
+Non-negotiable scope rules:
+- Keep COM12 blocked.
+- Use guarded flash for all uploads.
+- Run switch-health monitor during each LED validation pass.
+- Preserve graphic-zone overlap mapping.
+
+Key file:
+- Captain-v2/src/control_main.cpp
+
+Regression watch command:
+- powershell -ExecutionPolicy Bypass -File scripts/Monitor-SwitchHealth.ps1 -Port COM5 -DurationSeconds 120
+
+Suggested flow:
+1) Build/upload control via guarded script.
+2) Observe each game mode for brightness/readability through glass.
+3) Run monitor for 120s.
+4) Tune only brightness/palette if needed.
