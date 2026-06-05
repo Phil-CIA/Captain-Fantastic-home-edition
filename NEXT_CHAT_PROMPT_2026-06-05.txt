@@ -16,6 +16,11 @@ Primary focus next session:
 	- game over
 2) If still too dim in spots, add one global gameplay brightness bias scalar so tuning is one-parameter.
 3) Keep behavior and safety checks tight; avoid unrelated refactors.
+4) Switch latency follow-up (new active scope):
+	- Phase 1: control-only debounce tuning, set MATRIX_SWITCH_CONFIRM_POLLS 5 -> 2
+	- Do not go below 2 on control in this phase
+	- Keep matrix debounce unchanged in Phase 1
+	- Phase 2 only if needed after bench validation: matrix debounce 4 -> 3 (not 2)
 
 Non-negotiable scope rules:
 - Keep COM12 blocked.
@@ -25,6 +30,9 @@ Non-negotiable scope rules:
 
 Key file:
 - Captain-v2/src/control_main.cpp
+
+Issue draft:
+- docs/ISSUE_SWITCH_LATENCY_CONTROL_5_TO_2.md
 
 Regression watch command:
 - powershell -ExecutionPolicy Bypass -File scripts/Monitor-SwitchHealth.ps1 -Port COM5 -DurationSeconds 120
