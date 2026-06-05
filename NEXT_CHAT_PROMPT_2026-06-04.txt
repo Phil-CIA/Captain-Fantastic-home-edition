@@ -1,0 +1,21 @@
+Resume from HANDOFF_2026-06-03.md.
+
+Tomorrow's focus:
+1) Compare the LED-related code changes between the 2026-05-12 and 2026-05-15 handoffs.
+2) Keep the scope on the WS2812 strip / GPIO15 path first.
+3) Separate GPIO15 strip behavior from matrix-only RGB/status diagnostics.
+4) Decide whether any further restore is needed or whether the current control WS2812 path is already the correct end state.
+
+Rules:
+- Use the handoff docs as the source of truth for what changed between 5/12 and 5/15.
+- Keep COM12 blocked and guarded flash enabled.
+- Do not widen scope into gameplay refactors.
+
+Useful references:
+- HANDOFF_2026-06-03.md
+- END_OF_DAY_HANDOFF_2026-05-12.md
+- END_OF_DAY_HANDOFF_2026-05-13.md
+- END_OF_DAY_HANDOFF_2026-05-14.md
+- END_OF_DAY_HANDOFF_2026-05-15.md
+- Captain-v2/src/control_main.cpp
+- Captain-v2-matrix/src/matrix_app_main.cpp
