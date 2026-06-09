@@ -1,0 +1,52 @@
+Resume from HANDOFF_2026-06-09.md.
+
+Current validated baseline (unchanged from last bench-validated firmware):
+1) Control gameplay LED renderer uses graphic-zone mapping.
+2) Zone overlap is intentional and must remain.
+3) Brightened gameplay palette is active for painted-glass readability.
+4) Guarded control upload + COM12 hard block + MAC precheck remain mandatory.
+5) Last switch-health monitor baseline from prior validated session had warnings=0.
+
+What changed this session:
+1) Added/updated audio planning docs:
+   - docs/ISSUE_AUDIO_AND_GAME_MODES.md
+   - docs/SOUND_MODEL.md
+2) Updated docs index:
+   - docs/README.txt
+3) No control/gameplay firmware logic changes were made in this session.
+
+Primary focus next session (bench):
+1) Upload control firmware through guarded flow.
+2) Bench-verify LED readability through glass across modes:
+   - attract
+   - serve ball
+   - ball in play
+   - bonus countdown
+   - game over
+3) Run switch-health monitor for 120s.
+4) If latency is still sluggish, execute Phase 1 switch debounce tuning in control only:
+   - MATRIX_SWITCH_CONFIRM_POLLS: 5 -> 2
+   - Do not go below 2 in Phase 1
+   - Keep matrix debounce unchanged in Phase 1
+
+Non-negotiable scope rules:
+- Keep COM12 blocked.
+- Use guarded flash for all uploads.
+- Run switch-health monitor during each validation pass.
+- Preserve graphic-zone overlap mapping.
+- Keep audio runtime wiring as separate scope from bench validation work.
+
+Key files:
+- Captain-v2/src/control_main.cpp
+- docs/ISSUE_SWITCH_LATENCY_CONTROL_5_TO_2.md
+- docs/ISSUE_AUDIO_AND_GAME_MODES.md
+- docs/SOUND_MODEL.md
+
+Regression watch command:
+- powershell -ExecutionPolicy Bypass -File scripts/Monitor-SwitchHealth.ps1 -Port COM5 -DurationSeconds 120
+
+Suggested flow:
+1) Guarded upload (control).
+2) Bench mode readability pass.
+3) Monitor-SwitchHealth 120s.
+4) Apply only the minimum required runtime tuning and re-check.
